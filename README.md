@@ -247,7 +247,7 @@ python nexus_mcp_server.py
 | `get_context(agent_id, project_id?)` | Получить контекст для новой сессии: сводку прошлой + совместные решения. |
 | `archive_current_session(agent_id, session_data)` | Сохранить сырые данные текущей сессии в архив. |
 | `record_joint_decision(project_id, decision, by_agents, reason)` | Записать решение, принятое несколькими агентами. |
-| `run_ingestion(max_files?)` | Запустить пайплайн обработки `input_docs/raw/` (форматы md/txt/json/jsonl/csv/html/pdf/png/jpg/bmp/tiff/webp). |
+| `run_ingestion(max_files?)` | Запустить пайплайн обработки `input_docs/raw/` (форматы md/txt/json/jsonl/csv/html/pdf/docx/epub/png/jpg/bmp/tiff/webp). |
 | `get_ingestion_status()` | Показать последние записи лога ингестии. |
 | `generate_session_summary(agent_id, session_id?)` | Автосводка архивной сессии в формате *Сделано / Решения / Дальше* (эвристика, без LLM). |
 | `collapse_session_history(agent_id, keep_last=1)` | Свернуть старые архивы сессий в одно резюме истории (экономия места и токенов). |
@@ -321,12 +321,12 @@ Nexus умеет автоматически превращать сырые фа
 - Архив обработанных: `nexus_store/input_docs/processed/`
 - Лог: `nexus_store/_logs/ingestion.jsonl`
 
-**Поддерживаемые форматы:** `.md`, `.markdown`, `.txt`, `.text`, `.json`, `.jsonl`, `.csv`, `.html`, `.htm`, `.pdf`
+**Поддерживаемые форматы:** `.md`, `.markdown`, `.txt`, `.text`, `.json`, `.jsonl`, `.csv`, `.html`, `.htm`, `.pdf`, `.docx`, `.epub`
 (остальное — `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tiff`, `.webp` — обрабатываются через OCR, если установлен pytesseract или easyocr;
 `.gif` и т.д. — помечается как `skipped` в логе и остаётся в `raw/`).
 
 **Что делает пайплайн для каждого файла:**
-1. Извлекает текст (JSON → pretty-print, CSV → Markdown-таблица, HTML → текст с заголовками `#`, PDF → pypdf/PyMuPDF, PNG/JPG/BMP/TIFF → OCR: pytesseract или easyocr).
+1. Извлекает текст (JSON → pretty-print, CSV → Markdown-таблица, HTML → текст с заголовками `#`, PDF → pypdf/PyMuPDF, DOCX → zipfile+XML, EPUB → container.xml→OPF→spine→XHTML, PNG/JPG/BMP/TIFF → OCR: pytesseract или easyocr).
 2. Читает front-matter из `.md` (`tags: [...]`, `project: <id>`, `source: <url>`) — они становятся тегами/привязкой чанка.
 3. Разбивает на семантические чанки ~1200 символов (по заголовкам в Markdown).
 4. Индексирует каждый чанк через `add_chunk` (теги `#doc`, `#source:<kind>` + теги из front-matter).
@@ -478,7 +478,7 @@ cd e:\VSCodeProjects\Nexus
 python -c "from core.nexus_core import Nexus; nm = Nexus(); print('ok')"
 ```
 
-### pytest-набор (140 тестов)
+### pytest-набор (288 тестов)
 
 ```bash
 cd e:\VSCodeProjects\Nexus
@@ -496,7 +496,7 @@ pytest tests/test_nexus_cli.py -v   # только CLI
 | `test_summarizer.py` | 26 | ~0.3s |
 | `test_session_hook.py` | 8 | ~0.1s |
 | `test_semantic.py` | 18 | ~0.3s |
-| `test_ingestion.py` | 44 | ~0.4s |
+| `test_ingestion.py` | 62 | ~0.4s |
 | `test_nexus_cli.py` | 11 | ~0.1s |
 | `test_watchkeeper.py` | 20 | ~0.2s |
 | `test_ocr.py` | 19 | ~0.3s |
@@ -531,7 +531,7 @@ pytest tests/test_nexus_cli.py -v   # только CLI
 - [x] **Конфиг пользователя** — `nexus_config.json`: пути, лимиты, OCR, auto-start; MCP + CLI
 - [x] **Веб-страницы по URL** — скачивание HTML → content extraction → `raw/` → пайплайн
 - [x] **Оркестратор** — multi-agent task management: start/end/cancel, agent tracking, project stats
-- [ ] **EPUB / DOCX** — дополнительные форматы документации
+- [x] **EPUB / DOCX** — DOCX: zero-dep zipfile+XML (python-docx fallback); EPUB: container.xml → OPF → spine → XHTML (ebooklib fallback)
 
 ---
 

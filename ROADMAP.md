@@ -9,7 +9,7 @@
 - 🚧 **В работе / частично**
 - ⏳ **Запланировано**
 
-**Версия:** 0.9.5 · **Обновлено:** 2026-09-05
+**Версия:** 0.9.6 · **Обновлено:** 2026-09-05
 
 ---
 
@@ -100,14 +100,14 @@
 
 ---
 
-## Этап 6 — Расширение форматов документов 🚧
+## Этап 6 — Расширение форматов документов ✅
 
 | Задача | Статус | Комментарий |
 | :--- | :---: | :--- |
 | **PDF (`pypdf` / `PyMuPDF`)** | ✅ | Извлечение текста из `.pdf`; pypdf (pure Python) + fallback на PyMuPDF (fitz) |
 | **OCR изображений** (`pytesseract` / `easyocr`) | ✅ | Текст из `.png/.jpg/.jpeg/.bmp/.tiff/.webp`; fallback между бэкендами; auto-select |
 | **Веб-страницы по URL** | ✅ | `core/web.py`: скачивание HTML → `raw/` → пайплайн; content extraction (strip nav/script/style) |
-| EPUB / DOCX | ⏳ | Дополнительные форматы документации |
+| **EPUB / DOCX** | ✅ | DOCX: zero-dep zipfile+XML (python-docx fallback); EPUB: container.xml → OPF → spine → XHTML (ebooklib fallback) |
 
 ---
 

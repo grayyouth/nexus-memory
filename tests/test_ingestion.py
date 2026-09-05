@@ -348,3 +348,321 @@ class TestPDFIngestion:
         report = pipeline.run()
         assert report["scanned"] >= 1
         assert report["ingested"] + report["skipped"] + report["errors"] == report["scanned"]
+
+
+# ─── DOCX Fixtures (module-level) ──────────────────────────────────────────
+
+
+@pytest.fixture
+def docx_pipeline(nexus_instance, nexus_store):
+    """Create an IngestionPipeline for DOCX tests."""
+    raw_dir = nexus_store / "input_docs" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    return IngestionPipeline(nexus_instance, raw_dir=raw_dir)
+
+
+@pytest.fixture
+def sample_docx(nexus_store):
+    """Create a minimal valid DOCX file using zipfile."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+
+    # Minimal DOCX structure: [Content_Types].xml + word/document.xml
+    content_types = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>'''
+
+    rels = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>'''
+
+    document_ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    doc_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{document_ns}">
+  <w:body>
+    <w:p><w:r><w:t>Hello from DOCX!</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second paragraph with Unicode: привет мир.</w:t></w:r></w:p>
+    <w:p><w:r><w:t></w:t></w:r></w:p>
+  </w:body>
+</w:document>'''
+
+    docx_path = data_dir / "sample.docx"
+    with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("word/_rels/document.xml.rels", rels)
+        zf.writestr("word/document.xml", doc_xml)
+
+    return docx_path
+
+
+@pytest.fixture
+def empty_docx(nexus_store):
+    """Create a minimal valid DOCX with no text content."""
+    import zipfile
+
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+
+    content_types = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>'''
+
+    doc_xml = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body></w:body>
+</w:document>'''
+
+    docx_path = data_dir / "empty.docx"
+    with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("word/document.xml", doc_xml)
+
+    return docx_path
+
+
+@pytest.fixture
+def broken_docx(nexus_store):
+    """Create a file that looks like DOCX but isn't valid."""
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+    docx_path = data_dir / "broken.docx"
+    docx_path.write_bytes(b"This is not a zip file at all")
+    return docx_path
+
+
+# ─── DOCX Tests ──────────────────────────────────────────────────────────────
+
+
+class TestDOCXIngestion:
+    """Test DOCX ingestion pipeline (zero-dep zipfile + XML)."""
+
+
+    def test_kind_docx_supported(self, docx_pipeline):
+        assert docx_pipeline._kind(Path("test.docx")) == "docx"
+
+    def test_extract_docx_basic(self, docx_pipeline, sample_docx):
+        text = docx_pipeline._extract_docx(sample_docx)
+        assert "Hello from DOCX!" in text
+        assert "привет мир" in text
+
+    def test_extract_docx_empty(self, docx_pipeline, empty_docx):
+        text = docx_pipeline._extract_docx(empty_docx)
+        assert text == ""
+
+    def test_extract_docx_broken(self, docx_pipeline, broken_docx):
+        text = docx_pipeline._extract_docx(broken_docx)
+        assert text == ""
+
+    def test_normalize_docx(self, docx_pipeline):
+        docx_text = "Para one\n\nPara two\n\n\n\nMultiple newlines"
+        result = docx_pipeline._normalize(docx_text, "docx", Path("test.docx"))
+        assert "Para one" in result
+        assert "Multiple newlines" in result
+        assert "\n\n\n\n" not in result
+
+    def test_process_file_docx(self, docx_pipeline, nexus_store, sample_docx):
+        # Copy to raw dir
+        import shutil
+        shutil.copy(sample_docx, docx_pipeline.raw_dir / "test.docx")
+        rep = docx_pipeline.process_file(docx_pipeline.raw_dir / "test.docx")
+        assert rep["status"] == "ingested"
+        assert rep["kind"] == "docx"
+
+    def test_process_file_docx_empty(self, docx_pipeline, nexus_store, empty_docx):
+        import shutil
+        shutil.copy(empty_docx, docx_pipeline.raw_dir / "empty.docx")
+        rep = docx_pipeline.process_file(docx_pipeline.raw_dir / "empty.docx")
+        assert rep["status"] == "error"
+
+    def test_process_file_docx_broken(self, docx_pipeline, nexus_store, broken_docx):
+        import shutil
+        shutil.copy(broken_docx, docx_pipeline.raw_dir / "broken.docx")
+        rep = docx_pipeline.process_file(docx_pipeline.raw_dir / "broken.docx")
+        assert rep["status"] == "error"
+
+
+# ─── EPUB Fixtures (module-level) ──────────────────────────────────────────
+
+
+@pytest.fixture
+def epub_pipeline(nexus_instance, nexus_store):
+    """Create an IngestionPipeline for EPUB tests."""
+    raw_dir = nexus_store / "input_docs" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    return IngestionPipeline(nexus_instance, raw_dir=raw_dir)
+
+
+@pytest.fixture
+def sample_epub(nexus_store):
+    """Create a minimal valid EPUB file."""
+    import zipfile
+
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+
+    # Container
+    container = b'''<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>'''
+
+    # OPF with manifest and spine
+    opf = b'''<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Test EPUB</dc:title>
+    <dc:identifier id="uid">urn:uuid:12345</dc:identifier>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+    <itemref idref="chapter2"/>
+  </spine>
+</package>'''
+
+    # Chapter 1 XHTML
+    chapter1 = b'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 1</title></head>
+<body>
+  <h1>First Chapter</h1>
+  <p>This is the content of chapter one.</p>
+</body>
+</html>'''
+
+    # Chapter 2 XHTML
+    chapter2 = b'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 2</title></head>
+<body>
+  <h1>Second Chapter</h1>
+  <p>Content with Unicode.</p>
+</body>
+</html>'''
+
+    epub_path = data_dir / "sample.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("content.opf", opf)
+        zf.writestr("chapter1.xhtml", chapter1)
+        zf.writestr("chapter2.xhtml", chapter2)
+
+    return epub_path
+
+
+@pytest.fixture
+def empty_epub(nexus_store):
+    """Create a minimal valid EPUB with no chapters."""
+    import zipfile
+
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+
+    container = b'''<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>'''
+
+    opf = b'''<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Empty EPUB</dc:title>
+  </metadata>
+  <manifest/>
+  <spine/>
+</package>'''
+
+    epub_path = data_dir / "empty.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("content.opf", opf)
+
+    return epub_path
+
+
+@pytest.fixture
+def broken_epub(nexus_store):
+    """Create a file that looks like EPUB but isn't valid."""
+    data_dir = nexus_store / "_data"
+    data_dir.mkdir(exist_ok=True)
+    epub_path = data_dir / "broken.epub"
+    epub_path.write_bytes(b"This is not a zip file at all")
+    return epub_path
+
+
+# ─── EPUB Tests ──────────────────────────────────────────────────────────────
+
+
+class TestEPUBIngestion:
+    """Test EPUB ingestion pipeline (zero-dep zipfile + container.xml -> OPF -> spine)."""
+
+
+
+    def test_kind_epub_supported(self, epub_pipeline):
+        assert epub_pipeline._kind(Path("test.epub")) == "epub"
+
+    def test_extract_epub_basic(self, epub_pipeline, sample_epub):
+        text = epub_pipeline._extract_epub(sample_epub)
+        assert "First Chapter" in text
+        assert "chapter one" in text
+
+    def test_extract_epub_empty(self, epub_pipeline, empty_epub):
+        text = epub_pipeline._extract_epub(empty_epub)
+        assert text == ""
+
+    def test_extract_epub_broken(self, epub_pipeline, broken_epub):
+        text = epub_pipeline._extract_epub(broken_epub)
+        assert text == ""
+
+    def test_normalize_epub(self, epub_pipeline):
+        epub_text = "# Chapter\n\nPara one\n\n\n\nMultiple newlines"
+        result = epub_pipeline._normalize(epub_text, "epub", Path("test.epub"))
+        assert "Chapter" in result
+        assert "Multiple newlines" in result
+        assert "\n\n\n\n" not in result
+
+    def test_process_file_epub(self, epub_pipeline, nexus_store, sample_epub):
+        import shutil
+        shutil.copy(sample_epub, epub_pipeline.raw_dir / "test.epub")
+        rep = epub_pipeline.process_file(epub_pipeline.raw_dir / "test.epub")
+        assert rep["status"] == "ingested"
+        assert rep["kind"] == "epub"
+
+    def test_process_file_epub_empty(self, epub_pipeline, nexus_store, empty_epub):
+        import shutil
+        shutil.copy(empty_epub, epub_pipeline.raw_dir / "empty.epub")
+        rep = epub_pipeline.process_file(epub_pipeline.raw_dir / "empty.epub")
+        assert rep["status"] == "error"
+
+    def test_process_file_epub_broken(self, epub_pipeline, nexus_store, broken_epub):
+        import shutil
+        shutil.copy(broken_epub, epub_pipeline.raw_dir / "broken.epub")
+        rep = epub_pipeline.process_file(epub_pipeline.raw_dir / "broken.epub")
+        assert rep["status"] == "error"
+
+    def test_run_with_epub_only(self, epub_pipeline, nexus_store, sample_epub):
+        import shutil
+        shutil.copy(sample_epub, epub_pipeline.raw_dir / "test.epub")
+        report = epub_pipeline.run()
+        assert report["scanned"] == 1
+        assert report["ingested"] == 1

@@ -7,7 +7,8 @@ into the Nexus library via Nexus.add_chunk(). Processed files are moved to
 input_docs/processed/.
 
 Supported formats: .md, .markdown, .txt, .text, .json, .jsonl, .csv, .html, .htm, .pdf,
-                   .png, .jpg, .jpeg, .bmp, .tiff, .webp (via OCR)
+                   .png, .jpg, .jpeg, .bmp, .tiff, .webp (via OCR),
+                   .docx, .epub
 Unsupported formats (.gif, ...) are left in raw/ and reported in the log.
 
 Usage (CLI):
@@ -51,6 +52,8 @@ SUPPORTED_EXTS: Dict[str, str] = {
     ".html": "html",
     ".htm": "html",
     ".pdf": "pdf",
+    ".docx": "docx",
+    ".epub": "epub",
     ".png": "image",
     ".jpg": "image",
     ".jpeg": "image",
@@ -245,6 +248,12 @@ class IngestionPipeline:
         if kind == "image":
             return self._extract_image(path)
 
+        if kind == "docx":
+            return self._extract_docx(path)
+
+        if kind == "epub":
+            return self._extract_epub(path)
+
         try:
             data = path.read_bytes()
         except OSError as e:
@@ -321,6 +330,188 @@ class IngestionPipeline:
         self._log("warning", f"OCR returned empty for {path.name} (no engine or no text found)")
         return ""
 
+    def _extract_docx(self, path: Path) -> str:
+        """Extract text from a DOCX file using zero-dep zipfile + XML parsing.
+
+        Tries zero-dependency approach first (zipfile + xml.etree), falls back
+        to python-docx for better compatibility with complex DOCX files.
+        """
+        # Try zero-dep approach first (zipfile + xml.etree.ElementTree)
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+
+            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            with zipfile.ZipFile(path, "r") as zf:
+                with zf.open("word/document.xml") as doc_xml:
+                    tree = ET.parse(doc_xml, parser=ET.XMLParser(encoding="utf-8"))
+                    root = tree.getroot()
+
+            paragraphs: List[str] = []
+            for p in root.findall(".//w:p", ns):
+                texts: List[str] = []
+                for t in p.findall(".//w:t", ns):
+                    if t.text:
+                        texts.append(t.text)
+                para_text = "".join(texts).strip()
+                if para_text:
+                    paragraphs.append(para_text)
+
+            return "\n\n".join(paragraphs)
+        except ImportError:
+            pass
+        except Exception as e:
+            self._log("warning", f"zero-dep docx failed for {path.name}, trying python-docx: {e}")
+
+        # Fallback to python-docx
+        try:
+            from docx import Document  # type: ignore
+            doc = Document(str(path))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            return "\n\n".join(paragraphs)
+        except ImportError:
+            pass
+        except Exception as e:
+            self._log("error", f"python-docx failed for {path.name}: {e}")
+
+        self._log("error", f"docx extraction failed for {path.name} (install python-docx or use zero-dep)")
+        return ""
+
+    def _extract_epub(self, path: Path) -> str:
+        """Extract text from an EPUB file using zero-dep zipfile.
+
+        Walks the EPUB structure: container.xml -> content.opf -> spine -> XHTML chapters.
+        Reuses _html_to_text for XHTML content. Falls back to ebooklib if available.
+        """
+        # Try zero-dep approach first
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+
+            with zipfile.ZipFile(path, "r") as zf:
+                # 1. Find container
+                with zf.open("META-INF/container.xml") as container_xml:
+                    container_tree = ET.parse(container_xml)
+                    container_root = container_tree.getroot()
+
+                # Find OPF path
+                opf_path = None
+                # container.xml uses "rootfiles" element (no namespace usually)
+                for elem in container_root.iter():
+                    # Exact local-name match: a substring check ("rootfile" in
+                    # tag) also matches the wrapper element "rootfiles", which
+                    # has no full-path attribute -> opf_path stayed None and
+                    # EPUBs with the OPF at the archive root extracted empty.
+                    if str(elem.tag).rsplit("}", 1)[-1] == "rootfile":
+                        opf_path = elem.attrib.get("full-path")
+                        break
+
+                if not opf_path:
+                    # Fallback: first *.opf anywhere in the archive, else the
+                    # common default location.
+                    opf_candidates = [n for n in zf.namelist() if n.lower().endswith(".opf")]
+                    opf_path = opf_candidates[0] if opf_candidates else "OEBPS/content.opf"
+
+                # 2. Parse OPF to get spine (reading order)
+                with zf.open(opf_path) as opf_xml:
+                    opf_tree = ET.parse(opf_xml)
+                    opf_root = opf_tree.getroot()
+
+                # Determine namespace
+                ns_match = re.match(r"\{(.+?)\}", opf_root.tag)
+                ns = {}
+                if ns_match:
+                    ns_prefix = ns_match.group(1)
+                    ns = {
+                        "opf": f"http://www.idpf.org/2007/opf",
+                        "ncx": "http://www.daisy.org/z3986/2005/ncx/",
+                        "dcmitype": "http://purl.org/dc/terms/",
+                        "dc": "http://purl.org/dc/elements/1.1/",
+                        "pkg": f"http://www.idpf.org/2007/pkg",
+                    }
+
+                # Get spine item references
+                spine_items: List[str] = []
+                for spine_elem in opf_root.iter("{http://www.idpf.org/2007/opf}spine"):
+                    for itemref in spine_elem.findall("{http://www.idpf.org/2007/opf}itemref"):
+                        item_id = itemref.attrib.get("idref")
+                        if item_id:
+                            spine_items.append(item_id)
+
+                # 3. Map item IDs to hrefs from manifest
+                manifest: Dict[str, str] = {}
+                for item in opf_root.iter("{http://www.idpf.org/2007/opf}item"):
+                    item_id = item.attrib.get("id")
+                    href = item.attrib.get("href", "")
+                    media_type = item.attrib.get("media-type", "")
+                    if item_id and href:
+                        manifest[item_id] = (href, media_type)
+
+                # 4. Extract text from spine-ordered XHTML files
+                chapters: List[str] = []
+                for item_id in spine_items:
+                    if item_id not in manifest:
+                        continue
+                    href, media_type = manifest[item_id]
+
+                    # Resolve href relative to OPF location
+                    if opf_path and "/" in opf_path:
+                        opf_dir = str(Path(opf_path).parent)
+                    else:
+                        opf_dir = ""
+
+                    chapter_path = Path(opf_dir) / href
+                    # Normalize to forward slashes
+                    chapter_path_str = str(chapter_path).replace("\\", "/")
+
+                    # Try with leading slash
+                    if chapter_path_str not in zf.namelist():
+                        # Try without leading slash
+                        chapter_path_str = chapter_path_str.lstrip("/")
+
+                    if chapter_path_str not in zf.namelist():
+                        # Try just the href
+                        if href not in zf.namelist():
+                            continue
+                        chapter_path_str = href
+
+                    if "text" not in media_type and "xml" not in media_type:
+                        continue
+
+                    with zf.open(chapter_path_str) as ch_xml:
+                        raw = ch_xml.read().decode("utf-8", errors="replace")
+
+                    # Extract text from XHTML using HTML parser
+                    text = self._html_to_text(raw)
+                    if text.strip():
+                        chapters.append(text.strip())
+
+                return "\n\n".join(chapters)
+        except ImportError:
+            pass
+        except Exception as e:
+            self._log("warning", f"zero-dep epub failed for {path.name}, trying ebooklib: {e}")
+
+        # Fallback to ebooklib
+        try:
+            import ebooklib  # type: ignore
+            from ebooklib import epub  # type: ignore
+
+            book = epub.read_epub(str(path))
+            chapters = []
+            for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+                text = self._html_to_text(item.get_content().decode("utf-8", errors="replace"))
+                if text.strip():
+                    chapters.append(text.strip())
+            return "\n\n".join(chapters)
+        except ImportError:
+            pass
+        except Exception as e:
+            self._log("error", f"ebooklib failed for {path.name}: {e}")
+
+        self._log("error", f"epub extraction failed for {path.name} (install ebooklib or use zero-dep)")
+        return ""
+
     # --- normalization to markdown ---
 
     def _normalize(self, raw: str, kind: str, path: Path) -> str:
@@ -363,6 +554,20 @@ class IngestionPipeline:
 
         if kind == "html":
             return self._html_to_text(raw)
+
+        if kind == "docx":
+            # DOCX text is plain text already, normalize spacing
+            lines = [ln.rstrip() for ln in raw.splitlines()]
+            text = "\n".join(lines)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+        if kind == "epub":
+            # EPUB text is already HTML-converted to markdown, normalize spacing
+            lines = [ln.rstrip() for ln in raw.splitlines()]
+            text = "\n".join(lines)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
 
         return raw.strip()
 
@@ -481,7 +686,7 @@ class IngestionPipeline:
         return chunks
 
     def _chunk(self, text: str, kind: str) -> List[str]:
-        if kind in ("markdown", "pdf", "image"):
+        if kind in ("markdown", "pdf", "image", "docx", "epub"):
             return self._chunk_markdown(text)
         return self._chunk_plain(text)
 
