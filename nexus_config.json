@@ -1,0 +1,41 @@
+{
+  "version": "0.9.5",
+  "store": {
+    "base_dir": null,
+    "description": "Path to nexus_store directory. null = default (./nexus_store relative to project root)."
+  },
+  "ingestion": {
+    "max_chunk_chars": 1200,
+    "description": "Maximum characters per chunk. Friendly to small-context local LLMs."
+  },
+  "watchkeeper": {
+    "default_interval": 300,
+    "auto_start": false,
+    "description": "Default scan interval in seconds. auto_start = start on Nexus init."
+  },
+  "summarizer": {
+    "max_items_per_bucket": 10,
+    "max_item_chars": 300,
+    "max_dialog_messages": 5,
+    "description": "Limits for auto-generated session summaries."
+  },
+  "semantic": {
+    "vector_size": 512,
+    "cache_size": 128,
+    "use_sentence_transformers": false,
+    "description": "Semantic search settings. sentence_transformers gives better results but requires pip install."
+  },
+  "ocr": {
+    "default_engine": null,
+    "default_languages": [
+      "eng",
+      "rus"
+    ],
+    "description": "OCR settings. null = auto-select best available engine."
+  },
+  "prompt_templates": {
+    "context_prompt_max_chunks": 5,
+    "context_prompt_max_chars": 1800,
+    "description": "Default limits for build_context_prompt."
+  }
+}

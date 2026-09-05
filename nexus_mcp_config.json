@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nexus": {
+      "command": "python",
+      "args": [
+        "E:/VSCodeProjects/Nexus/nexus_mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nexus Store Data (populated by the system at runtime)
+nexus_store/*
+!nexus_store/.gitkeep
+
+# Logs
+*.log
+_logs/
+
+# Pytest
+.pytest_cache/
+
+# Environment Variables
+.env
+.env.local

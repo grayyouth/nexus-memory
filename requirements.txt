@@ -1,0 +1,13 @@
+# Core dependencies
+mcp>=2.1
+pypdf
+
+# Optional: OCR support (uncomment what you need)
+# pytesseract       # Fast, free, requires system tesseract installed
+# easyocr           # Neural network-based, higher quality, pip-installable
+
+# Development dependencies
+# pytest>=7.0
+# pytest-anyio
+# pytest-faker
+# requests-mock
