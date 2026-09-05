@@ -40,7 +40,6 @@ pip install -e ".[all]"
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 
 # Или запустите напрямую из корня проекта
-cd e:\VSCodeProjects\Nexus
 python nexus_cli.py add "текст" --tags "#test"
 ```
 
@@ -67,7 +66,7 @@ Nexus использует `nexus_config.json` для хранения наст�
 
 ```json
 {
-  "version": "0.9.3",
+  "version": "0.9.6",
   "store": { "base_dir": null },
   "ingestion": { "max_chunk_chars": 1200 },
   "watchkeeper": { "default_interval": 300, "auto_start": false },
@@ -210,7 +209,7 @@ nexus_store/
 
 ## 🔌 Как подключиться (MCP)
 
-Сервер: **`e:\VSCodeProjects\Nexus\nexus_mcp_server.py`**
+Сервер: **`nexus_mcp_server.py`** (в корне репозитория)
 
 Пример конфигурации для клиентов MCP (Cline, VS Code и др.) — файл
 [`nexus_mcp_config.json`](./nexus_mcp_config.json):
@@ -220,17 +219,18 @@ nexus_store/
   "mcpServers": {
     "nexus": {
       "command": "python",
-      "args": ["E:/VSCodeProjects/Nexus/nexus_mcp_server.py"],
+      "args": ["путь/к/репо/nexus_mcp_server.py"],
       "env": {}
     }
   }
 }
 ```
 
+> Замените `путь/к/репо` на реальный путь к клонированному репозиторию.
+
 Проверка подключения из командной строки:
 
 ```bash
-cd e:\VSCodeProjects\Nexus
 python nexus_mcp_server.py
 ```
 
@@ -278,8 +278,6 @@ python nexus_mcp_server.py
 Для работы без MCP — командная строка:
 
 ```bash
-cd e:\VSCodeProjects\Nexus
-
 # Добавить знание
 python nexus_cli.py add "blake3 быстрее SHA-256 в 3 раза" --tags "#hashing" --project "MyProject"
 
@@ -334,7 +332,6 @@ Nexus умеет автоматически превращать сырые фа
 
 **Запуск из командной строки:**
 ```bash
-cd e:\VSCodeProjects\Nexus
 python -m core.ingestion
 ```
 
@@ -353,8 +350,6 @@ IngestionPipeline для новых файлов. Больше не нужно �
 
 **Запуск из командной строки:**
 ```bash
-cd e:\VSCodeProjects\Nexus
-
 # Запустить в фоне (блокирует терминал, Ctrl+C для остановки)
 python nexus_cli.py watch --interval 300
 
@@ -474,14 +469,12 @@ generate_session_summary(agent_id="cline")
 ### Быстрая проверка ядра из Python
 
 ```bash
-cd e:\VSCodeProjects\Nexus
 python -c "from core.nexus_core import Nexus; nm = Nexus(); print('ok')"
 ```
 
 ### pytest-набор (288 тестов)
 
 ```bash
-cd e:\VSCodeProjects\Nexus
 pytest tests/ -v                    # все тесты
 pytest tests/test_nexus_core.py -v  # только ядро
 pytest tests/test_summarizer.py -v  # только сводки

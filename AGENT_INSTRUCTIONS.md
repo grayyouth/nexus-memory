@@ -29,14 +29,16 @@
   "mcpServers": {
     "nexus": {
       "command": "python",
-      "args": ["E:/VSCodeProjects/Nexus/nexus_mcp_server.py"],
+      "args": ["путь/к/репо/nexus_mcp_server.py"],
       "env": {}
     }
   }
 }
 ```
 
-- **Путь к серверу:** `e:\VSCodeProjects\Nexus\nexus_mcp_server.py`
+> Замените `путь/к/репо` на реальный путь к клонированному репозиторию.
+
+- **Путь к серверу:** `nexus_mcp_server.py` (в корне репозитория)
 - **Тип транспорта:** stdio (MCP по стандартному вводу/выводу)
 - **Проверка:** в новой сессии сразу вызови `get_context(agent_id=...)` — если ответ не «ошибка», ты подключён.
 
@@ -193,13 +195,13 @@ python nexus_cli.py watch --status         # показать статус
 
 | Что | Путь |
 | :--- | :--- |
-| Конфиг MCP | `e:\VSCodeProjects\Nexus\nexus_mcp_config.json` |
-| Инструкция для агентов | `e:\VSCodeProjects\Nexus\AGENT_INSTRUCTIONS.md` (этот файл) |
-| Руководство пользователя | `e:\VSCodeProjects\Nexus\README.md` |
-| План развития | `e:\VSCodeProjects\Nexus\ROADMAP.md` |
-| Ядро | `e:\VSCodeProjects\Nexus\core\nexus_core.py` |
-| Ingestion | `e:\VSCodeProjects\Nexus\core\ingestion.py` |
-| Данные | `e:\VSCodeProjects\Nexus\nexus_store\` |
+| Конфиг MCP | `nexus_mcp_config.json` |
+| Инструкция для агентов | `AGENT_INSTRUCTIONS.md` (этот файл) |
+| Руководство пользователя | `README.md` |
+| План развития | `ROADMAP.md` |
+| Ядро | `core/nexus_core.py` |
+| Ingestion | `core/ingestion.py` |
+| Данные | `nexus_store/` |
 
 ---
 

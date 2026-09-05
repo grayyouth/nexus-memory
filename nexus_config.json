@@ -1,5 +1,5 @@
 {
-  "version": "0.9.5",
+  "version": "0.9.6",
   "store": {
     "base_dir": null,
     "description": "Path to nexus_store directory. null = default (./nexus_store relative to project root)."
