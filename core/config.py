@@ -58,6 +58,17 @@ DEFAULTS: Dict[str, Any] = {
         "default_engine": None,
         "default_languages": ["eng", "rus"],
     },
+    "trust": {
+        "trusted_domains": [
+            "wikipedia.org", "python.org", "mozilla.org", "microsoft.com",
+            "arxiv.org", "github.com", "oracle.com", "redhat.com",
+        ],
+        "trusted_trust": 1.0,
+        "unknown_url_trust": 0.4,
+        "local_doc_trust": 0.8,
+        "default_trust": 0.5,
+        "trust_weight": 0.25,
+    },
     "prompt_templates": {
         "context_prompt_max_chunks": 5,
         "context_prompt_max_chars": 1800,
@@ -148,6 +159,10 @@ class Config:
     def prompt_templates(self) -> ConfigSection:
         return ConfigSection(self._data.get("prompt_templates", {}), "prompt_templates")
 
+    @property
+    def trust(self) -> ConfigSection:
+        return ConfigSection(self._data.get("trust", {}), "trust")
+
     # --- Convenience getters ---
 
     @property
@@ -181,6 +196,10 @@ class Config:
     @property
     def use_sentence_transformers(self) -> bool:
         return self._data.get("semantic", {}).get("use_sentence_transformers", False)
+
+    @property
+    def trust_weight(self) -> float:
+        return float(self._data.get("trust", {}).get("trust_weight", 0.25))
 
     # --- Update methods ---
 
@@ -231,6 +250,7 @@ class Config:
                 "ocr_languages": self.ocr_languages,
                 "ocr_engine": self.ocr_engine,
                 "use_sentence_transformers": self.use_sentence_transformers,
+                "trust_weight": self.trust_weight,
             },
         }
 

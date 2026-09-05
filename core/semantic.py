@@ -34,6 +34,10 @@ KEYWORD_BONUS = 0.25
 MAX_CACHE_ENTRIES = config.semantic.get("cache_size", 128)
 ROUND_DIGITS = 6
 _USE_SENTENCE_TRANSFORMERS = config.semantic.get("use_sentence_transformers", False)
+# Source-trust weighting (see core/trust.py): final score is damped by
+# (1 - w + w*trust); 0 disables the effect entirely.
+TRUST_WEIGHT = float(config.trust_weight)
+_DEFAULT_TRUST = float(config.trust.get("default_trust", 0.5))
 
 _TOKEN_RE = re.compile(r"[а-яёa-z0-9]+")
 
@@ -276,6 +280,18 @@ class SemanticSearch:
                 if query_lower and query_lower in body:
                     res["keyword_hit"] = True
                     res["score"] = round(res["score"] + KEYWORD_BONUS, 4)
+            scored.sort(key=lambda r: r["score"], reverse=True)
+
+        # Source-trust damping (core/trust.py): chunks from trusted sources
+        # keep their score, unknown/low-trust sources are down-weighted.
+        if TRUST_WEIGHT > 0.0:
+            for res in scored:
+                t = res.get("trust")
+                if t is None:
+                    t = _DEFAULT_TRUST
+                res["score"] = round(
+                    res["score"] * (1.0 - TRUST_WEIGHT + TRUST_WEIGHT * float(t)), 4
+                )
             scored.sort(key=lambda r: r["score"], reverse=True)
 
         results = scored[: max(1, int(top_k))]

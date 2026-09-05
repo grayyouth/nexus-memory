@@ -16,6 +16,7 @@ from typing import List, Dict, Optional, Any
 from pathlib import Path
 
 from core.config import config
+from core.trust import compute_trust, clamp_trust
 
 # Default base directory (when Nexus() is created without arguments).
 # NOTE: All runtime paths are derived from the instance's self.base_dir, so a
@@ -105,11 +106,19 @@ class Nexus:
     
     # --- Knowledge Base Management ---
 
-    def add_chunk(self, content: str, tags: List[str], project_id: Optional[str] = None, source: Optional[str] = None, agent_id: Optional[str] = None) -> str:
+    def add_chunk(self, content: str, tags: List[str], project_id: Optional[str] = None, source: Optional[str] = None, agent_id: Optional[str] = None, trust: Optional[float] = None) -> str:
         """
         Adds a single chunk of knowledge to the library and index.
         Returns the unique ID of the chunk.
+
+        If `trust` is not given, it is computed from the source by
+        core.trust.compute_trust (official docs -> 1.0, unknown URL -> 0.4,
+        local docs -> 0.8, none -> 0.5).
         """
+        if trust is None:
+            trust = compute_trust(source)
+        trust = clamp_trust(trust)
+
         chunk_id = self._generate_id(content)
 
         # Determine content file path
@@ -129,6 +138,7 @@ class Nexus:
             if project_id: f.write(f"project_id: {project_id}\n")
             if source: f.write(f"source: {source}\n")
             if agent_id: f.write(f"agent_id: {agent_id}\n")
+            f.write(f"trust: {trust}\n")
             f.write(f"created_at: {datetime.now().isoformat()}\n")
             f.write(f"---\n\n")
             f.write(content)
@@ -143,7 +153,8 @@ class Nexus:
                 "project_id": project_id,
                 "source_file": str(snippet_path.relative_to(self.base_dir)),
                 "created_at": datetime.now().isoformat(),
-                "agent_id": agent_id
+                "agent_id": agent_id,
+                "trust": trust
             }
             chunks_index.append(index_entry)
             self._write_json(self.chunks_index_file, chunks_index)

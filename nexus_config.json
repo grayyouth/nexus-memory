@@ -37,5 +37,23 @@
     "context_prompt_max_chunks": 5,
     "context_prompt_max_chars": 1800,
     "description": "Default limits for build_context_prompt."
+  },
+  "trust": {
+    "trusted_domains": [
+      "wikipedia.org",
+      "python.org",
+      "mozilla.org",
+      "microsoft.com",
+      "arxiv.org",
+      "github.com",
+      "oracle.com",
+      "redhat.com"
+    ],
+    "trusted_trust": 1.0,
+    "unknown_url_trust": 0.4,
+    "local_doc_trust": 0.8,
+    "default_trust": 0.5,
+    "trust_weight": 0.25,
+    "description": "Source-trust scoring (core/trust.py). trust_weight damps semantic scores: score *= (1 - w + w*trust)."
   }
 }
