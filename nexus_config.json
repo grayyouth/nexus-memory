@@ -1,7 +1,7 @@
 {
-  "version": "0.9.6",
+  "version": "0.9.5",
   "store": {
-    "base_dir": null,
+    "base_dir": "E:\\VSCodeProjects\\Nexus\\nexus_store",
     "description": "Path to nexus_store directory. null = default (./nexus_store relative to project root)."
   },
   "ingestion": {
@@ -9,7 +9,7 @@
     "description": "Maximum characters per chunk. Friendly to small-context local LLMs."
   },
   "watchkeeper": {
-    "default_interval": 300,
+    "default_interval": 3600,
     "auto_start": false,
     "description": "Default scan interval in seconds. auto_start = start on Nexus init."
   },
@@ -33,11 +33,6 @@
     ],
     "description": "OCR settings. null = auto-select best available engine."
   },
-  "prompt_templates": {
-    "context_prompt_max_chunks": 5,
-    "context_prompt_max_chars": 1800,
-    "description": "Default limits for build_context_prompt."
-  },
   "trust": {
     "trusted_domains": [
       "wikipedia.org",
@@ -55,5 +50,10 @@
     "default_trust": 0.5,
     "trust_weight": 0.25,
     "description": "Source-trust scoring (core/trust.py). trust_weight damps semantic scores: score *= (1 - w + w*trust)."
+  },
+  "prompt_templates": {
+    "context_prompt_max_chunks": 5,
+    "context_prompt_max_chars": 1800,
+    "description": "Default limits for build_context_prompt."
   }
 }

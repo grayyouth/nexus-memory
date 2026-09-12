@@ -178,11 +178,30 @@ def cmd_context_prompt(args: argparse.Namespace) -> None:
     print("---")
 
 
+def cmd_digest(args: argparse.Namespace) -> None:
+    """Project digest: cross-agent activity overview."""
+    from core.project_digest import ProjectDigest
+
+    nm = Nexus(base_dir=args.store)
+    since = args.since
+    if args.days is not None and not since:
+        from datetime import datetime, timedelta
+        since = (datetime.now() - timedelta(days=args.days)).isoformat()
+
+    block = ProjectDigest(nm).get_digest(
+        project_id=args.project,
+        since=since,
+        exclude_agent=args.exclude_agent,
+        agent_filter=args.from_agent,
+    )
+    print(block)
+
+
 def cmd_summary(args: argparse.Namespace) -> None:
     """Generate a session summary."""
     nm = Nexus(base_dir=args.store)
     summarizer = SessionSummarizer(nm)
-    
+
     info = summarizer.generate_session_summary(args.agent)
     
     if info.get("status") != "ok":
@@ -199,6 +218,49 @@ def cmd_summary(args: argparse.Namespace) -> None:
         print(f"  Extracted: {stat_line}")
     else:
         print("  Extracted: nothing (empty archive)")
+
+
+def cmd_compress(args: argparse.Namespace) -> None:
+    """Compress a long session log into a compact, reusable block."""
+    nm = Nexus(base_dir=args.store)
+
+    raw_log = None
+    if args.raw_file:
+        raw_path = Path(args.raw_file)
+        if not raw_path.exists():
+            print(f"Error: file not found: {raw_path}")
+            return
+        with open(raw_path, "r", encoding="utf-8") as f:
+            raw_log = json.load(f)
+
+    if raw_log is None and not args.agent:
+        print("Error: укажите --agent (архив) или --raw-file (лог)")
+        return
+
+    summarizer = SessionSummarizer(nm)
+    info = summarizer.compress_session(
+        raw_log=raw_log,
+        agent_id=args.agent,
+        session_id=args.session_id,
+        level=args.level,
+        max_chars=args.max_chars,
+    )
+
+    if info.get("status") not in ("ok",):
+        print(f"Error: {info.get('status')}: {info.get('message', 'unknown')}")
+        return
+
+    print(f"Сжато: level={info['level']} · источник: {info['source']}")
+    print(f"Размер: {info['stats']['in_chars']} → {info['stats']['out_chars']} "
+          f"chars (ratio {info['stats']['ratio']}:1)")
+    llm = info.get("llm")
+    if llm:
+        if llm.get("status") == "ok":
+            print(f"LLM: {llm['summary']}")
+        else:
+            print(f"LLM: {llm.get('message', llm.get('error'))}")
+    print()
+    print(info["markdown"])
 
 
 def cmd_decisions(args: argparse.Namespace) -> None:
@@ -431,10 +493,30 @@ def main() -> None:
     # summary
     p_summary = subparsers.add_parser("summary", help="Generate session summary")
     p_summary.add_argument("--agent", required=True, help="Agent ID")
+
+    # compress
+    p_compress = subparsers.add_parser(
+        "compress", help="Compress a long session log into a compact block"
+    )
+    p_compress.add_argument("--agent", help="Agent ID (latest archived session)")
+    p_compress.add_argument("--session-id", help="Explicit session timestamp (YYYYMMDD_HHMM)")
+    p_compress.add_argument("--raw-file", help="Path to a JSON log file to compress (no store)")
+    p_compress.add_argument("--level", type=int, default=1,
+                            help="1 = heuristic (default), 2 = LLM upgrade")
+    p_compress.add_argument("--max-chars", type=int,
+                            help="Char budget for the markdown block")
     
     # decisions
     p_decisions = subparsers.add_parser("decisions", help="List joint decisions")
     p_decisions.add_argument("--project", required=True, help="Project ID")
+
+    # digest
+    p_digest = subparsers.add_parser("digest", help="Project digest: cross-agent changes")
+    p_digest.add_argument("--project", required=True, help="Project ID")
+    p_digest.add_argument("--since", help="Only changes after this time (session ts YYYYMMDD_HHMM, ISO or date)")
+    p_digest.add_argument("--days", type=int, help="Only changes within the last N days")
+    p_digest.add_argument("--from-agent", help="Show sessions of this agent only")
+    p_digest.add_argument("--exclude-agent", help="Hide sessions of this agent")
     
     # watch
     p_watch = subparsers.add_parser("watch", help="Start watchkeeper (auto-ingestion)")
@@ -479,6 +561,8 @@ def main() -> None:
         "context": cmd_context,
         "context-prompt": cmd_context_prompt,
         "summary": cmd_summary,
+        "compress": cmd_compress,
+        "digest": cmd_digest,
         "decisions": cmd_decisions,
         "watch": cmd_watch,
         "config": cmd_config,

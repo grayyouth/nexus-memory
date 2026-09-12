@@ -20,7 +20,7 @@ Usage:
     print(info["summary_file"])
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from core.nexus_core import Nexus
 from core.summarizer import SessionSummarizer
@@ -36,6 +36,7 @@ class SessionHook:
         self,
         agent_id: str,
         session_data: Any,
+        project_id: Optional[str] = None,
         collapse_after: bool = False,
         keep_last: int = 1,
     ) -> Dict[str, Any]:
@@ -46,6 +47,9 @@ class SessionHook:
         2. Auto-generate and store its summary (SessionSummarizer).
         3. Optionally collapse archives older than `keep_last` into one
            retrospective summary (SessionSummarizer.collapse_history).
+
+        `project_id` (optional) tags the archive with a project so the
+        cross-agent project digest (ProjectDigest) can attribute it.
 
         Returns a structured report dict; `status` is one of:
         "ok" | "invalid_input".
@@ -64,7 +68,7 @@ class SessionHook:
 
         # 1) Raw archive (unique file name even within the same minute).
         archive_file = self.nm.archive_session(
-            agent_id=agent_id, session_data=session_data
+            agent_id=agent_id, session_data=session_data, project_id=project_id
         )
 
         # 2) Auto-summary of the archive we just created (the newest one).

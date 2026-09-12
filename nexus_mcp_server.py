@@ -32,6 +32,7 @@ from core.ingestion import IngestionPipeline
 from core.summarizer import SessionSummarizer
 from core.session_hook import SessionHook
 from core.semantic import SemanticSearch
+from core.project_digest import ProjectDigest
 from core.watchkeeper import Watchkeeper
 from core.ocr import extract_text_from_image, ocr_scan_directory, get_ocr_status
 from core.web import fetch_web_page, save_to_raw, get_web_status
@@ -171,6 +172,36 @@ async def get_context(
     if not context.strip():
         return "No prior context found."
     return context
+
+
+@server.tool()
+async def project_digest(
+    project_id: str,
+    since: Optional[str] = None,
+    exclude_agent: Optional[str] = None,
+    agent_filter: Optional[str] = None,
+) -> str:
+    """Cross-agent project digest: what happened in the project.
+
+    Aggregates ALL agents' project-tagged sessions, joint decisions and recent
+    library chunks into one block. Call at session start with
+    since=<your last session timestamp> to see changes since you were away.
+
+    Args:
+        project_id: Project to scope by.
+        since: Lower bound, e.g. "20260911_0338" (session ts), ISO or plain date.
+        exclude_agent: Hide sessions archived by this agent.
+        agent_filter: Show sessions of this agent only.
+    """
+    try:
+        return ProjectDigest(nm).get_digest(
+            project_id=project_id,
+            since=since,
+            exclude_agent=exclude_agent,
+            agent_filter=agent_filter,
+        )
+    except Exception as e:
+        return f"Project digest error: {e}"
 
 
 @server.tool()
@@ -323,6 +354,54 @@ async def collapse_session_history(
 
 
 @server.tool()
+async def compress_session(
+    agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    raw_log: Optional[dict] = None,
+    level: int = 1,
+    max_chars: Optional[int] = None,
+) -> str:
+    """Compress a long session log into a compact, reusable structure that
+    keeps facts/decisions/tasks while dropping details. The markdown block
+    can be pasted into get_context(). Pass either `agent_id` (latest or
+    `session_id`-dated archive) or `raw_log` (any JSON log, e.g. NeoKron).
+
+    Args:
+        agent_id: Compress the latest archived session of this agent.
+        session_id: Optional explicit archive timestamp (YYYYMMDD_HHMM).
+        raw_log: Compress this JSON-serializable log directly (no store).
+        level: 1 = heuristic (default, local), 2 = optional LLM upgrade
+            (falls back to heuristic when no LLM is configured).
+        max_chars: Optional char budget for the markdown block.
+    """
+    summarizer = SessionSummarizer(nm)
+    info = summarizer.compress_session(
+        raw_log=raw_log,
+        agent_id=agent_id,
+        session_id=session_id,
+        level=level,
+        max_chars=max_chars,
+    )
+    if info.get("status") == "invalid_input":
+        return f"invalid_input: {info.get('message', 'unknown error')}"
+    if info.get("status") == "not_found":
+        return f"not_found: {info.get('message', 'unknown error')}"
+    lines = [
+        f"Session compressed (level={info['level']}, source={info['source']}).",
+        f"Chars: {info['stats']['in_chars']} → {info['stats']['out_chars']} "
+        f"(ratio {info['stats']['ratio']}:1).",
+    ]
+    llm = info.get("llm")
+    if llm:
+        if llm.get("status") == "ok":
+            lines.append(f"LLM summary: {llm['summary']}")
+        else:
+            lines.append(f"LLM note: {llm.get('message', llm.get('error'))}")
+    lines.append("\n" + info["markdown"])
+    return "\n".join(lines)
+
+
+@server.tool()
 async def semantic_search(
     query: str,
     top_k: int = 5,
@@ -409,6 +488,7 @@ async def build_context_prompt(
 async def end_session(
     agent_id: str,
     session_data: dict,
+    project_id: Optional[str] = None,
     collapse_after: bool = False,
     keep_last: int = 1,
 ) -> str:
@@ -421,6 +501,8 @@ async def end_session(
         session_data: Dict with the session's raw data. Use readable keys:
             actions / decisions / next_steps / chat_history (или по-русски:
             сделано / решения / дальше) — автосводка будет точнее.
+        project_id: Optional project to tag the session with (appears in the
+            cross-agent project digest).
         collapse_after: Also fold archives older than keep_last into one
             retrospective summary (default False).
         keep_last: How many of the newest archives to keep when collapsing.
@@ -429,6 +511,7 @@ async def end_session(
     info = hook.end_session(
         agent_id=agent_id,
         session_data=session_data,
+        project_id=project_id,
         collapse_after=collapse_after,
         keep_last=keep_last,
     )
@@ -741,7 +824,7 @@ async def orch_start_task(
 
     Args:
         task_id: Unique task identifier.
-        agent_id: Agent executing the task (e.g., "cline", "gigachat").
+        agent_id: Agent executing the task (e.g., "cline", "Gea").
         project_id: Project the task belongs to.
         description: Human-readable task description.
         model: Optional model name for the agent.

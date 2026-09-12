@@ -1,0 +1,37 @@
+﻿import sys
+from pathlib import Path
+
+code = []
+code.append('\"\"\"Nexus HTTP Server - REST API for Nexus memory system.\"\"\"')
+code.append('')
+code.append('import sys')
+code.append('import json')
+code.append('from pathlib import Path')
+code.append('from typing import Optional')
+code.append('from datetime import datetime')
+code.append('')
+code.append('sys.path.insert(0, str(Path(__file__).resolve().parent))')
+code.append('from core.nexus_core import Nexus')
+code.append('from core.ingestion import IngestionPipeline')
+code.append('from core.summarizer import SessionSummarizer')
+code.append('from core.session_hook import SessionHook')
+code.append('from core.semantic import SemanticSearch')
+code.append('from core.watchkeeper import Watchkeeper')
+code.append('from core.ocr import extract_text_from_image, ocr_scan_directory, get_ocr_status')
+code.append('from core.web import fetch_web_page, save_to_raw, get_web_status')
+code.append('from core.orchestrator import start_orchestrator_task, end_orchestrator_task, get_orchestrator_status, list_orchestrator_tasks')
+code.append('from core.config import config as nexus_config')
+code.append('from fastapi import FastAPI, Request')
+code.append('')
+code.append('PROJECT_ROOT = Path(__file__).resolve().parent')
+code.append('store_path = nexus_config.store_base_dir or PROJECT_ROOT / \"nexus_store\"')
+code.append('nm = Nexus(base_dir=store_path)')
+code.append('sem = SemanticSearch(nm)')
+code.append('wk = Watchkeeper(nexus=nm, interval=nexus_config.watchkeeper_interval)')
+code.append('')
+code.append('app = FastAPI(title=\"Nexus HTTP API\", version=\"0.9.5\")')
+code.append('')
+
+with open('E:/VSCodeProjects/Nexus/nexus_http_server.py', 'w', encoding='utf-8') as f:
+    f.write('\n'.join(code))
+print('Part 1 written')

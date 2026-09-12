@@ -26,6 +26,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.safe_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 # Default config path (project root)
@@ -48,6 +50,24 @@ DEFAULTS: Dict[str, Any] = {
         "max_items_per_bucket": 10,
         "max_item_chars": 300,
         "max_dialog_messages": 5,
+    },
+    "compressor": {
+        "default_level": 1,
+        "max_done": 8,
+        "max_decisions": 6,
+        "max_next": 6,
+        "max_other": 4,
+        "max_dialog_messages": 6,
+        "max_dialog_chars": 220,
+        "max_chars": 2400,
+    },
+    "digest": {
+        "max_sessions_per_agent": 6,
+        "max_items_per_bucket": 4,
+        "max_item_chars": 300,
+        "max_decisions": 8,
+        "max_chunks": 8,
+        "chunk_preview_chars": 140,
     },
     "semantic": {
         "vector_size": 512,
@@ -148,6 +168,10 @@ class Config:
         return ConfigSection(self._data.get("summarizer", {}), "summarizer")
 
     @property
+    def digest(self) -> ConfigSection:
+        return ConfigSection(self._data.get("digest", {}), "digest")
+
+    @property
     def semantic(self) -> ConfigSection:
         return ConfigSection(self._data.get("semantic", {}), "semantic")
 
@@ -226,10 +250,8 @@ class Config:
         logger.info("Config updated: %s", list(kwargs.keys()))
 
     def save(self) -> None:
-        """Save current config to file."""
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._config_path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, ensure_ascii=False)
+        """Save current config to file (atomically — temp + rename)."""
+        atomic_write_json(self._config_path, self._data)
         logger.info("Config saved to %s", self._config_path)
 
     def to_dict(self) -> Dict[str, Any]:

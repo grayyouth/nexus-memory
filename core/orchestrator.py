@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 from core.nexus_core import Nexus
 from core.summarizer import SessionSummarizer
 from core.session_hook import SessionHook
+from core.safe_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class Orchestrator:
 
         Args:
             task_id: Unique task identifier.
-            agent_id: Agent executing the task (e.g., "cline", "gigachat").
+            agent_id: Agent executing the task (e.g., "cline", "Gea").
             project_id: Project the task belongs to.
             description: Human-readable task description.
             model: Optional model name for the agent.
@@ -268,16 +269,14 @@ class Orchestrator:
     # --- Persistence ---
 
     def _save_tasks(self) -> None:
-        """Save tasks to JSON file."""
+        """Save tasks to JSON file (atomically — temp + rename, Phase 1)."""
         data = {
             "version": "0.9.4",
             "timestamp": datetime.now().isoformat(),
             "tasks": self._tasks,
             "agents": self._agents,
         }
-        self._tasks_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._tasks_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        atomic_write_json(self._tasks_file, data)
 
     def load_tasks(self) -> None:
         """Load tasks from JSON file."""

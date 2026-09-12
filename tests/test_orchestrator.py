@@ -58,7 +58,7 @@ class TestStartTask:
         
         task = orch.start_task(
             task_id="task_002",
-            agent_id="gigachat",
+            agent_id="Gea",
             project_id="MyProject",
             model="giga-chat",
             variant="high",
@@ -182,7 +182,7 @@ class TestQueryMethods:
         
         orch.start_task("task_001", "cline", "ProjectA")
         orch.start_task("task_002", "cline", "ProjectB")
-        orch.start_task("task_003", "gigachat", "ProjectA")
+        orch.start_task("task_003", "Gea", "ProjectA")
         
         cline_tasks = orch.get_agent_tasks("cline")
         assert len(cline_tasks) == 2
@@ -193,7 +193,7 @@ class TestQueryMethods:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectA")
+        orch.start_task("task_002", "Gea", "ProjectA")
         orch.start_task("task_003", "cline", "ProjectB")
         
         proj_tasks = orch.get_project_tasks("ProjectA")
@@ -205,7 +205,7 @@ class TestQueryMethods:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectA")
+        orch.start_task("task_002", "Gea", "ProjectA")
         orch.end_task("task_001", "cline")
         
         running = orch.get_running_tasks()
@@ -233,7 +233,7 @@ class TestStatistics:
         
         orch.start_task("task_001", "cline", "ProjectA")
         orch.start_task("task_002", "cline", "ProjectA")
-        orch.start_task("task_003", "gigachat", "ProjectA")
+        orch.start_task("task_003", "Gea", "ProjectA")
         orch.end_task("task_001", "cline")
         orch.cancel_task("task_002")
         
@@ -242,7 +242,7 @@ class TestStatistics:
         assert stats["running"] == 1  # task_003
         assert stats["completed"] == 1  # task_001
         assert stats["cancelled"] == 1  # task_002
-        assert stats["agents"] == 2  # cline, gigachat
+        assert stats["agents"] == 2  # cline, Gea
         assert stats["projects"] == 1  # ProjectA
 
     def test_agent_stats(self, tmp_path):
@@ -251,7 +251,7 @@ class TestStatistics:
         
         orch.start_task("task_001", "cline", "ProjectA")
         orch.start_task("task_002", "cline", "ProjectB")
-        orch.start_task("task_003", "gigachat", "ProjectA")
+        orch.start_task("task_003", "Gea", "ProjectA")
         
         stats = orch.get_stats()
         assert "cline" in stats["agent_stats"]
@@ -263,13 +263,13 @@ class TestStatistics:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectA")
+        orch.start_task("task_002", "Gea", "ProjectA")
         orch.start_task("task_003", "cline", "ProjectB")
         
         stats = orch.get_stats()
         assert "ProjectA" in stats["project_stats"]
         assert stats["project_stats"]["ProjectA"]["total_tasks"] == 2
-        assert set(stats["project_stats"]["ProjectA"]["agents"]) == {"cline", "gigachat"}
+        assert set(stats["project_stats"]["ProjectA"]["agents"]) == {"cline", "Gea"}
 
 
 class TestClearTasks:
@@ -280,7 +280,7 @@ class TestClearTasks:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectA")
+        orch.start_task("task_002", "Gea", "ProjectA")
         
         count = orch.clear_tasks()
         assert count == 2
@@ -305,7 +305,7 @@ class TestConvenienceFunctions:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectA")
+        orch.start_task("task_002", "Gea", "ProjectA")
         
         tasks_str = list_orchestrator_tasks(base_dir=store)
         assert "Found 2 task(s)" in tasks_str
@@ -315,7 +315,7 @@ class TestConvenienceFunctions:
         orch = Orchestrator(nexus=Nexus(base_dir=store))
         
         orch.start_task("task_001", "cline", "ProjectA")
-        orch.start_task("task_002", "gigachat", "ProjectB")
+        orch.start_task("task_002", "Gea", "ProjectB")
         
         tasks_str = list_orchestrator_tasks(agent_id="cline", base_dir=store)
         assert "Found 1 task(s)" in tasks_str

@@ -25,8 +25,9 @@ Usage:
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.nexus_core import Nexus
 from core.config import config
@@ -35,6 +36,21 @@ from core.config import config
 MAX_ITEMS_PER_BUCKET = config.summarizer.get("max_items_per_bucket", 10)
 MAX_ITEM_CHARS = config.summarizer.get("max_item_chars", 300)
 MAX_DIALOG_MESSAGES = config.summarizer.get("max_dialog_messages", 5)
+
+# --- Tunables (overridable via nexus_config.json → compressor.*) ---
+# Level 1 = heuristic (local, no LLM); level 2 = optional LLM upgrade.
+COMPRESSOR_DEFAULTS = {
+    "default_level": 1,
+    "max_done": 8,
+    "max_decisions": 6,
+    "max_next": 6,
+    "max_other": 4,
+    "max_dialog_messages": 6,
+    "max_dialog_chars": 220,
+    "max_chars": 2400,
+}
+_compressor_cfg = getattr(config, "compressor", None) or {}
+COMPRESSOR_CFG = {**COMPRESSOR_DEFAULTS, **{k: v for k, v in _compressor_cfg.items()}}
 
 # Session-data key -> summary bucket (English + Russian keys).
 DIALOG_KEYS = {"chat_history", "messages", "history", "dialog", "диалог"}
@@ -247,18 +263,21 @@ class SessionSummarizer:
             if agent_id in index:
                 prior_pointer = index[agent_id].get("last_session_summary")
         summary_path = self.nm.store_session_summary(agent_id, summary_md, session_id=ts)
-        if prior_pointer:
-            index = self.nm._read_json(self.nm.sessions_index_file) or {}
-            index[agent_id]["last_session_summary"] = prior_pointer
-            self.nm._write_json(self.nm.sessions_index_file, index)
 
-        # Mark the archive as summarized in the index.
-        index = self.nm._read_json(self.nm.sessions_index_file) or {}
-        for entry in (index.get(agent_id) or {}).get("history", []):
-            if entry.get("file") == relative:
-                entry["status"] = "summarized"
-                entry["summary"] = summary_path
-        self.nm._write_json(self.nm.sessions_index_file, index)
+        # Restore pointer + mark the archive as summarized — one locked
+        # read-modify-write so concurrent agents never lose entries (Phase 1).
+        def _mutate_index(index: Any) -> Any:
+            index = index or {}
+            if agent_id in index:
+                if prior_pointer:
+                    index[agent_id]["last_session_summary"] = prior_pointer
+            for entry in (index.get(agent_id) or {}).get("history", []):
+                if entry.get("file") == relative:
+                    entry["status"] = "summarized"
+                    entry["summary"] = summary_path
+            return index
+
+        self.nm._update_json(self.nm.sessions_index_file, _mutate_index, empty={})
 
         buckets = self.extract_structure(session_data)
         stats = {k: len(v) for k, v in buckets.items()}
@@ -342,16 +361,19 @@ class SessionSummarizer:
         collapsed_id = f"{first_ts}_{last_ts}_collapsed"
         collapsed_path = self.nm.store_session_summary(agent_id, summary_md, session_id=collapsed_id)
 
-        index = self.nm._read_json(self.nm.sessions_index_file) or {}
-        if agent_id in index:
-            if prior_pointer:
-                index[agent_id]["last_session_summary"] = prior_pointer
-            index[agent_id]["collapsed_summary"] = collapsed_path
-            collapsed_files = {str(e.get("file")) for e in to_collapse}
-            for entry in index[agent_id].get("history", []):
-                if entry.get("file") in collapsed_files:
-                    entry["status"] = "collapsed"
-        self.nm._write_json(self.nm.sessions_index_file, index)
+        def _mutate_index(index: Any) -> Any:
+            index = index or {}
+            if agent_id in index:
+                if prior_pointer:
+                    index[agent_id]["last_session_summary"] = prior_pointer
+                index[agent_id]["collapsed_summary"] = collapsed_path
+                collapsed_files = {str(e.get("file")) for e in to_collapse}
+                for entry in index[agent_id].get("history", []):
+                    if entry.get("file") in collapsed_files:
+                        entry["status"] = "collapsed"
+            return index
+
+        self.nm._update_json(self.nm.sessions_index_file, _mutate_index, empty={})
 
         return {
             "status": "ok",
@@ -361,5 +383,216 @@ class SessionSummarizer:
             "to": last_ts,
             "summary_file": collapsed_path,
         }
+
+    # --- Compression / compacting long sessions (roadmap chunk c7464edb) ---
+
+    def compress_session(
+        self,
+        raw_log: Any = None,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        level: int = 1,
+        max_chars: Optional[int] = None,
+        llm_call: Optional[Callable[[str], str]] = None,
+    ) -> Dict[str, Any]:
+        """Compress a raw session log into a compact, reusable structure.
+
+        Goal (Nexus roadmap chunk ``c7464edb``): graceful loss of DETAILS
+        while keeping all FACTS / DECISIONS / TASKS, so the compacted block
+        can be pasted into ``get_context()`` and the next "step" does not
+        lose the thread.
+
+        Sources (mutually exclusive):
+          - ``raw_log``: any JSON-serializable session dict to compress
+            directly (usable outside Nexus — e.g. NeoKron / Мнемозина logs).
+          - ``agent_id``: compress the latest archived session (or the one
+            given by ``session_id``).
+
+        Levels:
+          1 — heuristic (default, local, no LLM): reuses ``extract_structure``.
+          2 — optional LLM upgrade: calls ``llm_call(prompt) -> str`` and
+              stores the free-form summary under ``llm``. Falls back to
+              level 1 when no callable is provided (with a note).
+
+        Returns a dict: status, level, source, timestamp, compact
+        (buckets + dialog), markdown (get_context-ready block), llm, stats.
+        """
+        level = 2 if int(level or 1) >= 2 else 1
+        max_chars = max_chars or COMPRESSOR_CFG["max_chars"]
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        source = "raw_log"
+
+        if raw_log is None:
+            if not agent_id:
+                return {"status": "invalid_input",
+                        "message": "raw_log или agent_id обязателен."}
+            archive_path, archive_ts = self._find_archive_path(agent_id, session_id)
+            if archive_path is None:
+                return {"status": "not_found", "agent_id": agent_id,
+                        "message": "Архив сессии не найден (сначала archive_session)."}
+            with open(archive_path, "r", encoding="utf-8") as f:
+                archive = json.load(f)
+            raw_log = archive.get("session_data")
+            ts = archive.get("timestamp") or archive_ts or ts
+            source = f"archive:{agent_id}:{ts}"
+            if raw_log is None:
+                raw_log = archive  # tolerate archives without session_data
+
+        buckets = self.extract_structure(raw_log)
+        compact: Dict[str, Any] = {
+            "agent_id": agent_id,
+            "timestamp": ts,
+            "done": (buckets.get("done") or [])[: COMPRESSOR_CFG["max_done"]],
+            "decisions": (buckets.get("decisions") or [])[: COMPRESSOR_CFG["max_decisions"]],
+            "next": (buckets.get("next") or [])[: COMPRESSOR_CFG["max_next"]],
+            "other": (buckets.get("other") or [])[: COMPRESSOR_CFG["max_other"]],
+            "dialog": (buckets.get("dialog") or [])[: COMPRESSOR_CFG["max_dialog_messages"]],
+        }
+
+        llm: Optional[Dict[str, Any]] = None
+        level_used = level
+        if level >= 2:
+            if llm_call is None:
+                level_used = 1
+                llm = {"status": "skipped",
+                       "message": "level=2 запрошен, но llm_call не передан — "
+                                  "использована эвристика (level 1)."}
+            else:
+                try:
+                    text = llm_call(self._build_llm_prompt(compact))
+                    llm = {"status": "ok", "summary": (text or "").strip()}
+                except Exception as e:  # LLM не должен ронять сжатие
+                    level_used = 1
+                    llm = {"status": "error", "error": str(e),
+                           "message": "LLM-апгрейд не удался — использована эвристика."}
+
+        md = self._render_compact_markdown(compact, level=level_used)
+        md = self._fit_compact_markdown(compact, max_chars, level_used, md=md)
+
+        in_chars = len(json.dumps(raw_log, ensure_ascii=False))
+        out_chars = len(md)
+        ratio = round(in_chars / out_chars, 1) if out_chars else 0.0
+
+        return {
+            "status": "ok",
+            "level": level_used,
+            "source": source,
+            "timestamp": ts,
+            "compact": compact,
+            "llm": llm,
+            "markdown": md,
+            "stats": {"in_chars": in_chars, "out_chars": out_chars,
+                      "ratio": ratio},
+        }
+
+    @staticmethod
+    def _build_llm_prompt(compact: Dict[str, Any]) -> str:
+        """Build a prompt for the optional LLM upgrade (level 2)."""
+        sections = [
+            ("Сделано", compact.get("done", [])),
+            ("Решения", compact.get("decisions", [])),
+            ("Дальше", compact.get("next", [])),
+            ("Прочее", compact.get("other", [])),
+        ]
+        lines = [
+            "Сожми сессию агента в компактную сводку на русском языке.",
+            "Сохрани ВСЕ факты, решения и оставшиеся задачи. Убери повторы",
+            "и несущественные детали. Формат ответа:",
+            "СДЕЛАНО: ...\nРЕШЕНИЯ: ...\nДАЛЬШЕ: ...",
+            "",
+            "Исходные данные:",
+        ]
+        for title, items in sections:
+            if items:
+                lines.append(f"\n{title}: " + "; ".join(items))
+        return "\n".join(lines)
+
+    def _render_compact_markdown(
+        self, compact: Dict[str, Any], level: int = 1
+    ) -> str:
+        """Render the compact structure as a get_context-ready markdown."""
+        sections = [
+            ("Сделано", compact.get("done", [])),
+            ("Решения", compact.get("decisions", [])),
+            ("Дальше", compact.get("next", [])),
+            ("Прочее", compact.get("other", [])),
+            ("Диалог", compact.get("dialog", [])),
+        ]
+        who = f" ({compact.get('agent_id')})" if compact.get("agent_id") else ""
+        lines = [f"# Сжатая сессия{who}",
+                 f"**Время:** {compact.get('timestamp', '?')} · "
+                 f"**Уровень сжатия:** {level}"]
+        added = False
+        for title, items in sections:
+            if not items:
+                continue
+            added = True
+            lines.append(f"\n## {title}")
+            for item in items:
+                lines.append(f"- {_truncate(item, MAX_ITEM_CHARS)}")
+        if not added:
+            lines.append("\nСессия не содержит структурированных данных.")
+        return "\n".join(lines)
+
+    def _fit_compact_markdown(
+        self,
+        compact: Dict[str, Any],
+        max_chars: int,
+        level: int,
+        md: Optional[str] = None,
+    ) -> str:
+        """Shrink the compact block until it fits the char budget.
+
+        Order of sacrifice: dialog first (least important context), then
+        per-item truncation, then a hard tail truncation as last resort.
+        """
+        if max_chars <= 0:
+            return md if md is not None else self._render_compact_markdown(compact, level)
+        if md is None:
+            md = self._render_compact_markdown(compact, level)
+        if len(md) <= max_chars:
+            return md
+        slim = dict(compact)
+        slim["dialog"] = []
+        md = self._render_compact_markdown(slim, level)
+        if len(md) <= max_chars:
+            return md
+        limit = max(40, int(MAX_ITEM_CHARS * 0.6))
+        for key in ("done", "decisions", "next", "other"):
+            slim[key] = [_truncate(i, limit) for i in slim.get(key, [])]
+        md = self._render_compact_markdown(slim, level)
+        if len(md) > max_chars:
+            md = md[: max_chars - 1].rstrip() + "…"
+        return md
+
+
+def compress_session(
+    raw_log: Any = None,
+    agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    level: int = 1,
+    max_chars: Optional[int] = None,
+    llm_call: Optional[Callable[[str], str]] = None,
+    nexus: Optional[Nexus] = None,
+) -> Dict[str, Any]:
+    """Standalone convenience wrapper for ``SessionSummarizer.compress_session``.
+
+    Usable outside Nexus (NeoKron, Мнемозина): pass any JSON-serializable
+    log as ``raw_log`` — no store is touched.
+
+        from core.summarizer import compress_session
+        result = compress_session({"actions": [...], "decisions": [...]})
+        print(result["markdown"])
+    """
+    ss = SessionSummarizer(nexus or Nexus())
+    return ss.compress_session(
+        raw_log=raw_log,
+        agent_id=agent_id,
+        session_id=session_id,
+        level=level,
+        max_chars=max_chars,
+        llm_call=llm_call,
+    )
 
 
