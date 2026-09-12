@@ -16,9 +16,9 @@ class TestConfigInit:
     """Test Config initialization."""
 
     def test_default_init(self, tmp_path):
-        """Config loads from default path or uses defaults."""
-        cfg = Config()
-        # nexus_config.json exists in project root, so _loaded is True
+        """Config uses DEFAULTS when no config file is found."""
+        cfg = Config(config_path=tmp_path / "does_not_exist.json")
+        assert cfg._loaded is False
         assert cfg.max_chunk_chars == 1200
         assert cfg.watchkeeper_interval == 300
 
@@ -163,8 +163,8 @@ class TestConfigUpdate:
 class TestConfigConvenience:
     """Test convenience getters."""
 
-    def test_store_base_dir_none(self):
-        cfg = Config()
+    def test_store_base_dir_none(self, tmp_path):
+        cfg = Config(config_path=tmp_path / "does_not_exist.json")
         assert cfg.store_base_dir is None
 
     def test_store_base_dir_set(self, tmp_path):
@@ -211,11 +211,11 @@ class TestConfigStatus:
         assert status["settings"]["watchkeeper_auto_start"] is True
         assert status["settings"]["ocr_languages"] == ["eng"]
 
-    def test_get_status_defaults(self):
-        cfg = Config()
+    def test_get_status_defaults(self, tmp_path):
+        cfg = Config(config_path=tmp_path / "does_not_exist.json")
         status = cfg.get_status()
         
-        # Config file exists in project root
+        # isolated Config -> pure defaults
         assert status["settings"]["max_chunk_chars"] == 1200
         assert status["settings"]["watchkeeper_interval"] == 300
 

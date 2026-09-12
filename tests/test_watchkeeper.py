@@ -11,12 +11,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.watchkeeper import Watchkeeper
 from core.nexus_core import Nexus
+from core.config import DEFAULTS
+
+
+@pytest.fixture
+def default_config(monkeypatch):
+    """Isolate tests from the real nexus_config.json (watchkeeper.default_interval
+    may have been raised there): force the global singleton to pure defaults."""
+    import copy
+    from core.config import config as nexus_config
+    monkeypatch.setattr(nexus_config, "_data", copy.deepcopy(DEFAULTS))
 
 
 class TestWatchkeeperInit:
     """Test Watchkeeper initialization."""
 
-    def test_default_init(self, tmp_path):
+    def test_default_init(self, tmp_path, default_config):
         store = tmp_path / "nexus_store"
         wk = Watchkeeper(nexus=Nexus(base_dir=store))
         assert not wk.is_running
@@ -42,7 +52,7 @@ class TestWatchkeeperInit:
 class TestWatchkeeperStatus:
     """Test Watchkeeper status property."""
 
-    def test_status_not_running(self, tmp_path):
+    def test_status_not_running(self, tmp_path, default_config):
         store = tmp_path / "nexus_store"
         wk = Watchkeeper(nexus=Nexus(base_dir=store))
         status = wk.status

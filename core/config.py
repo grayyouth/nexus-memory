@@ -46,6 +46,15 @@ DEFAULTS: Dict[str, Any] = {
         "default_interval": 300,
         "auto_start": False,
     },
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8765,
+        "token": "",
+        "mode": "direct",
+        "auto_start": False,
+        "autoclose_minutes": 360,
+        "autoclose_interval_min": 30,
+    },
     "summarizer": {
         "max_items_per_bucket": 10,
         "max_item_chars": 300,
@@ -210,6 +219,39 @@ class Config:
         return self._data.get("watchkeeper", {}).get("auto_start", False)
 
     @property
+    def server_host(self) -> str:
+        return str(self._data.get("server", {}).get("host", "127.0.0.1"))
+
+    @property
+    def server_port(self) -> int:
+        return int(self._data.get("server", {}).get("port", 8765))
+
+    @property
+    def server_token(self) -> str:
+        return str(self._data.get("server", {}).get("token", ""))
+
+    @property
+    def server_mode(self) -> str:
+        return str(self._data.get("server", {}).get("mode", "direct"))
+
+    @property
+    def server_auto_start(self) -> bool:
+        return bool(self._data.get("server", {}).get("auto_start", False))
+
+    @property
+    def autoclose_minutes(self) -> int:
+        return int(self._data.get("server", {}).get("autoclose_minutes", 360))
+
+    @property
+    def autoclose_interval_min(self) -> int:
+        return int(self._data.get("server", {}).get("autoclose_interval_min", 30))
+
+    @property
+    def server_url(self) -> str:
+        """Base URL of the Nexus daemon (http://host:port)."""
+        return f"http://{self.server_host}:{self.server_port}"
+
+    @property
     def ocr_languages(self) -> List[str]:
         return self._data.get("ocr", {}).get("default_languages", ["eng", "rus"])
 
@@ -269,6 +311,12 @@ class Config:
                 "max_chunk_chars": self.max_chunk_chars,
                 "watchkeeper_interval": self.watchkeeper_interval,
                 "watchkeeper_auto_start": self.watchkeeper_auto_start,
+                "server_url": self.server_url,
+                "server_mode": self.server_mode,
+                "server_auto_start": self.server_auto_start,
+                "server_token_set": bool(self.server_token),
+                "autoclose_minutes": self.autoclose_minutes,
+                "autoclose_interval_min": self.autoclose_interval_min,
                 "ocr_languages": self.ocr_languages,
                 "ocr_engine": self.ocr_engine,
                 "use_sentence_transformers": self.use_sentence_transformers,

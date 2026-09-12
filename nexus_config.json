@@ -13,11 +13,38 @@
     "auto_start": false,
     "description": "Default scan interval in seconds. auto_start = start on Nexus init."
   },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "token": "",
+    "mode": "direct",
+    "auto_start": false,
+    "autoclose_minutes": 360,
+    "autoclose_interval_min": 30
+  },
   "summarizer": {
     "max_items_per_bucket": 10,
     "max_item_chars": 300,
     "max_dialog_messages": 5,
     "description": "Limits for auto-generated session summaries."
+  },
+  "compressor": {
+    "default_level": 1,
+    "max_done": 8,
+    "max_decisions": 6,
+    "max_next": 6,
+    "max_other": 4,
+    "max_dialog_messages": 6,
+    "max_dialog_chars": 220,
+    "max_chars": 2400
+  },
+  "digest": {
+    "max_sessions_per_agent": 6,
+    "max_items_per_bucket": 4,
+    "max_item_chars": 300,
+    "max_decisions": 8,
+    "max_chunks": 8,
+    "chunk_preview_chars": 140
   },
   "semantic": {
     "vector_size": 512,

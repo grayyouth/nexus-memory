@@ -9,7 +9,7 @@
 - 🚧 **В работе / частично**
 - ⏳ **Запланировано**
 
-**Версия:** 0.9.7 · **Обновлено:** 2026-09-12
+**Версия:** 0.9.8 · **Обновлено:** 2026-09-12
 
 ---
 
@@ -162,8 +162,9 @@
 | MCP `compress_session` + HTTP `/mcp/compress_session` | ✅ | |
 | Конфиг `compressor.*` | ✅ | `default_level`, `max_done/decisions/next/other`, `max_dialog_*`, `max_chars` |
 | Тесты | ✅ | `tests/test_safe_io.py` (14) + `tests/test_compressor.py` (13) |
-| **Фаза 2: серверный режим (FastAPI-демон)** | ⏳ | Следующий шаг: MCP-сервер → тонкий клиент к демону |
-| **Фаза 3: `nexus server start|stop|status` + автозапуск** | ⏳ | |
+| **Фаза 2: серверный режим (FastAPI-демон)** | ✅ | `nexus_http_server.py`: `create_app()`-фабрика, токен-middleware (Bearer; `/healthz` публичный), `main()` c argparse/pid-file/лог-файлом, фоновые `_autoclose_loop()` + watchkeeper; `core/autoclose.py` — backfill сводок по агентам; `core/server_client.py` — `NexusClient` (generic `call()` + ~20 typed-методов, `client_from_config()`); MCP `session_autoclose` + daemon-mode proxy (`server.mode='daemon'` → каждый тул делегирует на `POST /mcp/<tool>` демона); тесты `test_autoclose.py`, `test_server_client.py`, `test_http_server.py`, `test_mcp_daemon.py` |
+| **Фаза 3: `nexus server start|stop|status` + автозапуск** | ✅ | CLI `nexus server start/stop/status/token` (detached-процесс, pid-file, автогенерация токена, лог) + общий `nexus status`; автозапуск при входе в систему — `nexus server autostart enable|disable|status` (`core/autostart.py`: Windows schtasks ONLOGON → fallback HKCU Run-ключ (без админа) / Linux systemd user unit → fallback cron `@reboot` / macOS LaunchAgent; config `server.auto_start`; тесты `test_autostart.py`) |
+| **Автозакрытие сессий по таймауту** | ✅ | `auto_close_stale_sessions` — фоновый тред демона (`_autoclose_loop`) + MCP-тул `session_autoclose` |
 
 ---
 
@@ -182,10 +183,12 @@
 > SessionSummarizer/extract_structure + опциональный LLM-апгрейд (llama-server);
 > цель — сохранять факты/решения/задачи при резком сокращении токенов.
 >
-> **Статус на 2026-09-12:** Фаза 1 (atomic+lock) ✅ и `compress_session` ✅ — в Этапе 9.
-> Дальше: Фаза 2 (FastAPI-демон), Фаза 3 (`nexus server` + автозапуск),
-> автозакрытие сессий по таймауту, авто-проект/теги при ингесте, LLM-сводки
-> (интеграция llama-server в `compress_session(level=2)`).
+> **Статус на 2026-09-12:** Фаза 1 (atomic+lock) ✅, `compress_session` ✅,
+> Фаза 2 (FastAPI-демон + MCP daemon-mode proxy) ✅, `nexus server` CLI ✅
+> (автозапуск демона при старте системы — 🚧), автозакрытие сессий по
+> таймауту ✅ (фоновый тред демона + MCP `session_autoclose`).
+> Дальше: автозапуск демона при старте системы, авто-проект/теги при ингесте,
+> LLM-сводки (интеграция llama-server в `compress_session(level=2)`).
 
 - **Память «рабочих цепочек»** — запоминание успешных последовательностей действий («как мы решали похожую задачу в прошлый раз»).
 - **Граф знаний** — связи между чанками (тема → решение → проблема), вместо плоского списка.

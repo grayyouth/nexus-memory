@@ -11,6 +11,11 @@ Nexus CLI — командная строка для работы с Nexus па�
     python nexus_cli.py decisions --project "TinyVika"
     python nexus_cli.py search --semantic "векторный поиск"
     python nexus_cli.py context-prompt --agent cline --query "как работать с Flet"
+    python nexus_cli.py status                      # общий статус стора + демона
+    python nexus_cli.py server start                # запустить HTTP-демон (Фаза 2)
+    python nexus_cli.py server stop                 # остановить демон
+    python nexus_cli.py server status               # статус демона
+    python nexus_cli.py server autostart enable     # автозапуск демона при входе в систему
 
 Запуск из корня проекта:
     python nexus_cli.py <command> [options]
@@ -19,7 +24,10 @@ Nexus CLI — командная строка для работы с Nexus па�
 import argparse
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -442,6 +450,221 @@ def cmd_orch(args: argparse.Namespace) -> None:
         print(f"Cleared {count} tasks.")
 
 
+# --- Phase 2: daemon control (server mode) ---
+
+def _daemon_base_url() -> str:
+    return f"http://{nexus_config.server_host}:{nexus_config.server_port}"
+
+
+def _daemon_healthz(timeout: float = 2.0) -> Optional[dict]:
+    """Ping the daemon's public /healthz endpoint. None when not running."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{_daemon_base_url()}/healthz",
+                                    timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _daemon_pid_file() -> Path:
+    store = nexus_config.store_base_dir or (PROJECT_ROOT / "nexus_store")
+    return Path(store) / "_logs" / "server.pid"
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Show overall Nexus status: store, sessions, server mode, daemon."""
+    nm = Nexus(base_dir=args.store)
+
+    chunks_index = nm._read_json(nm.chunks_index_file) or []
+    if isinstance(chunks_index, dict):
+        chunks = list(chunks_index.values())
+    elif isinstance(chunks_index, list):
+        chunks = chunks_index
+    else:
+        chunks = []
+
+    projects: dict = {}
+    agents: dict = {}
+    for c in chunks:
+        if not isinstance(c, dict):
+            continue
+        p = c.get("project_id") or "general"
+        projects[p] = projects.get(p, 0) + 1
+        a = c.get("agent_id") or "-"
+        agents[a] = agents.get(a, 0) + 1
+
+    print("=== Nexus status ===")
+    print(f"Store: {nm.base_dir}")
+    print(f"Chunks: {len(chunks)} in {len(projects)} project(s)")
+    for p, n in sorted(projects.items(), key=lambda kv: -kv[1]):
+        print(f"  {p}: {n} chunk(s)")
+    print(f"Chunk authors: {', '.join(sorted(agents)) or '-'}")
+
+    sessions = nm._read_json(nm.sessions_index_file) or {}
+    print(f"Agents with sessions: {len(sessions)}")
+    for agent_id, info in sorted(sessions.items()):
+        history = (info or {}).get("history") or []
+        done = sum(1 for e in history if e.get("status") == "summarized")
+        last = history[-1].get("timestamp") if history else "-"
+        print(f"  {agent_id}: {len(history)} archive(s), "
+              f"summarized {done}, last={last}")
+
+    print(f"Server mode: {nexus_config.server_mode}")
+    print(f"Daemon URL: {_daemon_base_url()}")
+    info = _daemon_healthz()
+    if info:
+        print(f"Daemon: RUNNING (pid={info.get('pid')}, v{info.get('version')})")
+    else:
+        print("Daemon: not running")
+    print(f"Watchkeeper: auto_start={nexus_config.watchkeeper_auto_start}, "
+          f"interval={nexus_config.watchkeeper_interval}s")
+    print(f"Autoclose: interval={nexus_config.autoclose_interval_min} min, "
+          f"timeout={nexus_config.autoclose_minutes} min")
+    print(f"Server autostart: {'on' if nexus_config.server_auto_start else 'off'}")
+
+
+def _cmd_autostart(sub: str) -> None:
+    """Manage the boot entry that starts the daemon at login (Phase 3)."""
+    from core import autostart
+
+    if sub == "enable":
+        rep = autostart.enable(PROJECT_ROOT)
+        if rep.get("ok"):
+            nexus_config.set("server", "auto_start", True)
+            nexus_config.save()
+            print(f"Autostart enabled (backend: {rep.get('backend')}).")
+            print("  The daemon will be spawned at login via "
+                  "`nexus server start` (idempotent).")
+        else:
+            print(f"Autostart enable FAILED (backend: {rep.get('backend')}): "
+                  f"{rep.get('detail')}")
+        if rep.get("detail"):
+            print(f"  {rep['detail']}")
+        return
+
+    if sub == "disable":
+        rep = autostart.disable()
+        if rep.get("ok"):
+            nexus_config.set("server", "auto_start", False)
+            nexus_config.save()
+            print(f"Autostart disabled (backend: {rep.get('backend')}).")
+        else:
+            print(f"Autostart disable FAILED (backend: {rep.get('backend')}): "
+                  f"{rep.get('detail')}")
+        if rep.get("detail"):
+            print(f"  {rep['detail']}")
+        return
+
+    # status
+    rep = autostart.status()
+    state = "enabled" if rep.get("enabled") else "disabled"
+    print(f"Autostart boot entry: {state} "
+          f"(backend: {rep.get('backend') or 'n/a'})")
+    if rep.get("detail"):
+        print(f"  {rep['detail']}")
+    print(f"Config server.auto_start: {nexus_config.server_auto_start}")
+
+
+def cmd_server(args: argparse.Namespace) -> None:
+    """Control the Nexus HTTP daemon (Phase 2 server mode)."""
+    action = args.server_action
+    if args.host:
+        nexus_config.set("server", "host", args.host)
+    if args.port:
+        nexus_config.set("server", "port", args.port)
+
+    if action == "status":
+        info = _daemon_healthz()
+        if info:
+            print(f"Daemon: RUNNING at {_daemon_base_url()} "
+                  f"(pid={info.get('pid')}, v{info.get('version')})")
+            print(f"Mode: {nexus_config.server_mode}, "
+                  f"token: {'set' if nexus_config.server_token else 'NOT SET'}")
+        else:
+            print(f"Daemon: NOT RUNNING at {_daemon_base_url()}")
+            pid_file = _daemon_pid_file()
+            if pid_file.exists():
+                stale = pid_file.read_text(encoding="utf-8").strip()
+                print(f"Stale pid file: {pid_file} (pid={stale})")
+        return
+
+    if action == "autostart":
+        _cmd_autostart(getattr(args, "autostart_action", None) or "status")
+        return
+
+    if action == "start":
+        info = _daemon_healthz()
+        if info:
+            print(f"Daemon already running at {_daemon_base_url()} "
+                  f"(pid={info.get('pid')})")
+            return
+        token = nexus_config.server_token
+        if not token:
+            import secrets
+            token = secrets.token_hex(16)
+            nexus_config.set("server", "token", token)
+            nexus_config.save()
+            print("Generated a new server token (saved to config).")
+        pid_file = _daemon_pid_file()
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file = pid_file.parent / "server.log"
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+                                             | subprocess.CREATE_NEW_PROCESS_GROUP)
+        else:
+            popen_kwargs["start_new_session"] = True
+        cmd = [sys.executable, str(PROJECT_ROOT / "nexus_http_server.py"),
+               "--host", str(nexus_config.server_host),
+               "--port", str(nexus_config.server_port),
+               "--token", token,
+               "--pid-file", str(pid_file)]
+        with open(log_file, "a", encoding="utf-8") as log:
+            proc = subprocess.Popen(cmd, stdout=log, stderr=log,
+                                    cwd=str(PROJECT_ROOT), **popen_kwargs)
+        for _ in range(30):  # up to 15s, then point the user to the log
+            time.sleep(0.5)
+            if _daemon_healthz():
+                print(f"Daemon started: pid={proc.pid}, url={_daemon_base_url()}")
+                print(f"  pid file: {pid_file}")
+                print(f"  log file: {log_file}")
+                return
+        print(f"Daemon process spawned (pid={proc.pid}) but did not answer yet.")
+        print(f"  Check the log: {log_file}")
+        return
+
+    if action == "stop":
+        pid_file = _daemon_pid_file()
+        if not pid_file.exists():
+            print("Daemon: not running (no pid file).")
+            return
+        raw = pid_file.read_text(encoding="utf-8").strip()
+        try:
+            pid = int(raw)
+        except ValueError:
+            print(f"Corrupt pid file: {pid_file} ({raw!r})")
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            print(f"Daemon stopped (pid={pid}).")
+        except Exception as e:
+            print(f"Failed to stop daemon (pid={pid}): {e}")
+        finally:
+            pid_file.unlink(missing_ok=True)
+        return
+
+    if action == "token":
+        token = nexus_config.server_token
+        print(f"Token: {token or '(not set — generated on first `server start`)'}")
+        print(f"Config file: {nexus_config._config_path}")
+        return
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="nexus",
@@ -548,6 +771,23 @@ def main() -> None:
     p_orch.add_argument("--description", help="Task description (for start)")
     p_orch.add_argument("--status", help="Filter by status (for list)")
     
+    # server (Phase 2: daemon control)
+    p_server = subparsers.add_parser("server", help="Control the Nexus HTTP daemon")
+    p_server.add_argument("server_action",
+                          choices=["start", "stop", "status", "token",
+                                   "autostart"],
+                          help="Action: start/stop daemon, show status or "
+                               "token, manage boot autostart")
+    p_server.add_argument("autostart_action", nargs="?",
+                          choices=["status", "enable", "disable"],
+                          default="status",
+                          help="Sub-action for 'autostart' (default: status)")
+    p_server.add_argument("--host", help="Override bind host (persisted to config)")
+    p_server.add_argument("--port", type=int, help="Override bind port (persisted to config)")
+    
+    # status
+    subparsers.add_parser("status", help="Show overall Nexus status")
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -568,6 +808,8 @@ def main() -> None:
         "config": cmd_config,
         "web": cmd_web,
         "orch": cmd_orch,
+        "server": cmd_server,
+        "status": cmd_status,
     }
     
     cmd_func = commands.get(args.command)

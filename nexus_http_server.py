@@ -1,11 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Nexus HTTP Server - REST API for Nexus memory system."""
+"""Nexus HTTP Server - REST API daemon for Nexus memory system (Phase 2).
 
-import sys
+Серверный режим роадмапа: один резидентный процесс владеет хранилищем,
+а MCP-сервер и прочие потребители ходят к нему по HTTP (localhost + токен).
+Демон также крутит фоновые службы: watchkeeper (auto-ingestion) и
+авто-закрытие протухших сессий (auto_close_stale_sessions).
+"""
+
+import argparse
 import json
-from pathlib import Path
-from typing import Optional
+import logging
+import os
+import secrets
+import sys
+import threading
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.nexus_core import Nexus
@@ -14,12 +25,18 @@ from core.summarizer import SessionSummarizer
 from core.session_hook import SessionHook
 from core.semantic import SemanticSearch
 from core.watchkeeper import Watchkeeper
+from core.autoclose import auto_close_stale_sessions
 from core.ocr import extract_text_from_image, ocr_scan_directory, get_ocr_status
 from core.web import fetch_web_page, save_to_raw, get_web_status
-from core.orchestrator import start_orchestrator_task, end_orchestrator_task, get_orchestrator_status, list_orchestrator_tasks
+from core.orchestrator import (start_orchestrator_task, end_orchestrator_task,
+                               get_orchestrator_status, list_orchestrator_tasks)
 from core.config import config as nexus_config
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("nexus.server")
+
+VERSION = "0.9.8"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 store_path = nexus_config.store_base_dir or PROJECT_ROOT / "nexus_store"
@@ -27,7 +44,45 @@ nm = Nexus(base_dir=store_path)
 sem = SemanticSearch(nm)
 wk = Watchkeeper(nexus=nm, interval=nexus_config.watchkeeper_interval)
 
-app = FastAPI(title="Nexus HTTP API", version="0.9.5")
+app = FastAPI(title="Nexus HTTP API", version=VERSION)
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Token auth: all routes require 'Authorization: Bearer <token>' while
+    app.state.token is set. /healthz stays public for liveness checks."""
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    token = getattr(request.app.state, "token", "") or ""
+    if token:
+        if request.headers.get("Authorization") != f"Bearer {token}":
+            return JSONResponse({"status": "error", "message": "unauthorized"},
+                                status_code=401)
+    return await call_next(request)
+
+
+def create_app(nexus: Optional[Nexus] = None,
+               watcher: Optional[Watchkeeper] = None,
+               semantic: Optional[SemanticSearch] = None,
+               token: Optional[str] = None) -> FastAPI:
+    """Point every /mcp/* endpoint at a concrete store / services.
+
+    Production: main() calls create_app(token=...) with the default globals.
+    Tests: create_app(nexus=tmp_nexus) reuses the SAME app but all endpoints
+    then work against the temporary store (module globals are reassigned).
+    """
+    global nm, sem, wk
+    if nexus is not None:
+        nm = nexus
+    if semantic is not None:
+        sem = semantic
+    if watcher is not None:
+        wk = watcher
+    app.state.nm = nm
+    app.state.sem = sem
+    app.state.wk = wk
+    app.state.token = token if token is not None else nexus_config.server_token
+    return app
 
 
 async def get_json_body(req: Request) -> dict:
@@ -36,9 +91,16 @@ async def get_json_body(req: Request) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
+@app.api_route("/healthz", methods=["GET", "POST"])
+async def healthz():
+    """Public liveness endpoint for `nexus server status` (no auth)."""
+    return {"status": "ok", "service": "Nexus HTTP API", "version": VERSION,
+            "pid": os.getpid()}
+
+
 @app.post("/mcp/health")
 async def health():
-    return {"status": "ok", "service": "Nexus HTTP API", "version": "0.9.5"}
+    return {"status": "ok", "service": "Nexus HTTP API", "version": VERSION}
 
 
 @app.post("/mcp/add_note")
@@ -128,6 +190,28 @@ async def run_ingestion(req: Request):
     if max_files:
         report["files"] = report["files"][:max_files]
     return {"status": "ok", "report": report}
+
+
+@app.post("/mcp/get_ingestion_status")
+async def get_ingestion_status():
+    """Report recent ingestion history from the ingestion log."""
+    log_file = nm.base_dir / "_logs" / "ingestion.jsonl"
+    if not log_file.exists():
+        return {"status": "ok", "entries": [],
+                "message": "No ingestion has been run yet."}
+    entries = []
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+    except OSError as e:
+        return {"status": "error", "message": f"Cannot read ingestion log: {e}"}
+    return {"status": "ok", "entries": entries[-10:]}
 
 
 @app.post("/mcp/start_watchkeeper")
@@ -411,7 +495,89 @@ async def record_joint_decision(req: Request):
     return {"status": "ok"}
 
 
-if __name__ == "__main__":
+@app.post("/mcp/session_autoclose")
+async def session_autoclose(req: Request):
+    """Run ONE auto-close pass over stale sessions (automation item 2)."""
+    data = await get_json_body(req)
+    try:
+        report = auto_close_stale_sessions(
+            nexus=nm, timeout_min=int(data.get("timeout_min", nexus_config.autoclose_minutes))
+        )
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    return {"status": "ok", "info": report}
+
+
+def _autoclose_loop(nexus: Nexus, interval_min: int, timeout_min: int,
+                    stop_event: threading.Event) -> None:
+    """Background loop: periodically close stale sessions."""
+    while not stop_event.is_set():
+        try:
+            report = auto_close_stale_sessions(nexus, timeout_min=timeout_min)
+            if report.get("closed"):
+                logger.info("autoclose: %s", report["message"])
+        except Exception:
+            logger.exception("autoclose pass failed")
+        stop_event.wait(max(1, interval_min) * 60)
+
+
+def main() -> None:
+    """Run the Nexus daemon (used by `nexus server start`)."""
+    parser = argparse.ArgumentParser(description="Nexus HTTP daemon (Phase 2)")
+    parser.add_argument("--host", default=None, help="Bind host (default: config server.host)")
+    parser.add_argument("--port", type=int, default=None, help="Bind port (default: config server.port)")
+    parser.add_argument("--token", default=None,
+                        help="Auth token; auto-generated and saved to config if empty")
+    parser.add_argument("--pid-file", default=None, help="Where to write the PID")
+    parser.add_argument("--log-file", default=None, help="Redirect daemon logs to a file")
+    parser.add_argument("--no-autoclose", action="store_true",
+                        help="Disable the background session auto-closer")
+    args = parser.parse_args()
+
+    host = args.host or nexus_config.server_host
+    port = args.port or nexus_config.server_port
+    token = args.token if args.token is not None else nexus_config.server_token
+    if not token:  # daemon must always be protected in server mode
+        token = secrets.token_hex(16)
+        nexus_config.set("server", "token", token)
+        nexus_config.save()
+        logger.info("generated and saved a new server token to %s",
+                    nexus_config._config_path)
+
+    if args.log_file:
+        log_path = Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sys.stderr = open(log_path, "a", encoding="utf-8")
+        sys.stdout = sys.stderr
+
+    pid_file = Path(args.pid_file) if args.pid_file else store_path / "_logs" / "server.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    logger.info("pid file: %s (pid=%s)", pid_file, os.getpid())
+
+    create_app(token=token)
+
+    # Фоновые службы
+    if nexus_config.watchkeeper_auto_start:
+        wk.start()
+        logger.info("watchkeeper started (interval=%ss)", wk.interval)
+
+    stop_event = threading.Event()
+    if (not args.no_autoclose and nexus_config.autoclose_interval_min > 0):
+        threading.Thread(
+            target=_autoclose_loop, daemon=True,
+            args=(nm, nexus_config.autoclose_interval_min,
+                  nexus_config.autoclose_minutes, stop_event),
+        ).start()
+        logger.info("autoclose loop started (interval=%s min, timeout=%s min)",
+                    nexus_config.autoclose_interval_min,
+                    nexus_config.autoclose_minutes)
+
+    logger.info("Nexus daemon up on %s:%s (pid=%s)", host, port, os.getpid())
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

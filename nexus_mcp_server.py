@@ -20,6 +20,7 @@ Tools:
 """
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -37,6 +38,7 @@ from core.watchkeeper import Watchkeeper
 from core.ocr import extract_text_from_image, ocr_scan_directory, get_ocr_status
 from core.web import fetch_web_page, save_to_raw, get_web_status
 from core.orchestrator import Orchestrator, start_orchestrator_task, end_orchestrator_task, get_orchestrator_status, list_orchestrator_tasks
+from core.autoclose import auto_close_stale_sessions
 from core.config import config as nexus_config
 
 try:
@@ -889,9 +891,70 @@ async def orch_list_tasks(
     )
 
 
+@server.tool()
+async def session_autoclose(
+    timeout_min: int = 360,
+) -> str:
+    """Close (summarize) stale not-yet-summarized sessions for ALL agents.
+
+    Finds, for every agent, archives older than `timeout_min` minutes that
+    never got a summary (index status == 'archived') and backfills summaries
+    for them. Use when an agent disappeared mid-session so the project digest
+    stays complete. The daemon also runs this as a background job.
+
+    Args:
+        timeout_min: How old an unsummarized archive must be to close (default 360).
+    """
+    report = auto_close_stale_sessions(nm, timeout_min=timeout_min)
+    return json.dumps(report, ensure_ascii=False)
+
+
+# --- Daemon mode (Phase 2): thin client over the Nexus HTTP daemon ---
+
+def _install_daemon_proxy() -> Optional[str]:
+    """Reroute every tool through the Nexus HTTP daemon (server.mode='daemon').
+
+    Each registered tool's function is replaced by a thin HTTP proxy that
+    POSTs the tool arguments to /mcp/<tool_name> on the daemon, so the MCP
+    process never touches the store directly (single owner, no file locking).
+    Returns the daemon URL on success, None when not in daemon mode.
+    """
+    if nexus_config.server_mode != "daemon":
+        return None
+    from core.server_client import client_from_config
+
+    client = client_from_config(nexus_config)
+
+    def _make_proxy(tool_name: str):
+        async def proxy_fn(**kwargs):
+            try:
+                result = client.call(tool_name, **kwargs)
+            except Exception as e:  # daemon down / unauthorized / unknown route
+                return json.dumps(
+                    {"status": "error", "message": f"Daemon call failed: {e}"},
+                    ensure_ascii=False,
+                )
+            return json.dumps(result, ensure_ascii=False, default=str)
+        proxy_fn.__name__ = tool_name
+        return proxy_fn
+
+    for name, tool in list(server._tool_manager._tools.items()):
+        if getattr(tool.fn, "_nexus_daemon_proxy", False):
+            continue  # already proxied (idempotent re-entry)
+        proxy = _make_proxy(name)
+        proxy._nexus_daemon_proxy = True
+        tool.fn = proxy
+        tool.is_async = True
+    return client.base_url
+
+
 # --- Entry Point ---
 
 async def main() -> None:
+    daemon_url = _install_daemon_proxy()
+    if daemon_url:
+        print(f"[nexus-mcp] daemon mode: proxying tools to {daemon_url}",
+              file=sys.stderr)
     await server.run_stdio_async()
 
 
